@@ -81,8 +81,6 @@ class Skydrome(Account):
 
         return contract_txn
 
-    @retry
-    @check_gas
     async def swap(
             self,
             from_token: str,
@@ -95,27 +93,35 @@ class Skydrome(Account):
             min_percent: int,
             max_percent: int
     ):
-        amount_wei, amount, balance = await self.get_amount(
-            from_token,
-            min_amount,
-            max_amount,
-            decimal,
-            all_amount,
-            min_percent,
-            max_percent
-        )
+        try:
+            amount_wei, amount, balance = await self.get_amount(
+                from_token,
+                min_amount,
+                max_amount,
+                decimal,
+                all_amount,
+                min_percent,
+                max_percent
+            )
 
-        logger.info(
-            f"[{self.account_id}][{self.address}] Swap on Skydrome – {from_token} -> {to_token} | {amount} {from_token}"
-        )
+            logger.info(
+                f"[{self.account_id}][{self.address}] Swap on Skydrome – {from_token} -> {to_token} | {amount} {from_token}"
+            )
 
-        if from_token == "ETH":
-            contract_txn = await self.swap_to_token(from_token, to_token, amount_wei, slippage)
-        else:
-            contract_txn = await self.swap_to_eth(from_token, to_token, amount_wei, slippage)
+            if from_token == "ETH":
+                contract_txn = await self.swap_to_token(from_token, to_token, amount_wei, slippage)
+            else:
+                contract_txn = await self.swap_to_eth(from_token, to_token, amount_wei, slippage)
 
-        signed_txn = await self.sign(contract_txn)
+            signed_txn = await self.sign(contract_txn)
 
-        txn_hash = await self.send_raw_transaction(signed_txn)
+            txn_hash = await self.send_raw_transaction(signed_txn)
 
-        await self.wait_until_tx_finished(txn_hash.hex())
+            await self.wait_until_tx_finished(txn_hash.hex())
+            return True
+        except Exception as e:
+            logger.error(
+                f"[{self.account_id}][{self.address}] Swap on Skydrome Error | {e}"
+            )
+
+        return False

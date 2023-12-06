@@ -7,8 +7,8 @@ from config import ORBITER_CONTRACT
 
 
 class Orbiter(Account):
-    def __init__(self, account_id: int, private_key: str, chain: str) -> None:
-        super().__init__(account_id=account_id, private_key=private_key, chain=chain)
+    def __init__(self, account_id: int, private_key: str, proxy: str, chain: str) -> None:
+        super().__init__(account_id=account_id, private_key=private_key, proxy=proxy, chain=chain)
 
         self.bridge_codes = {
             "ethereum": "9001",
@@ -24,8 +24,6 @@ class Orbiter(Account):
             "zora": "9030",
         }
 
-    @retry
-    @check_gas
     async def bridge(
             self,
             destination_chain: str,
@@ -35,42 +33,51 @@ class Orbiter(Account):
             all_amount: bool,
             min_percent: int,
             max_percent: int
-    ):
-        amount_wei, amount, balance = await self.get_amount(
-            "ETH",
-            min_amount,
-            max_amount,
-            decimal,
-            all_amount,
-            min_percent,
-            max_percent
-        )
-
-        if ORBITER_CONTRACT == "":
-            logger.error(f"[{self.account_id}][{self.address}] Don't have orbiter contract")
-            return
-
-        if amount < 0.005 or amount > 5:
-            logger.error(
-                f"[{self.account_id}][{self.address}] Limit range amount for bridge 0.005 – 5 ETH | {amount} ETH"
-            )
-        else:
-            logger.info(
-                f"[{self.account_id}][{self.address}] Bridge {self.chain} –> {destination_chain} | {amount} ETH"
+    ):  
+        try:
+            amount_wei, amount, balance = await self.get_amount(
+                from_token="ETH",
+                min_amount=min_amount,
+                max_amount=max_amount,
+                decimal=decimal,
+                all_amount=all_amount,
+                min_percent=min_percent,
+                max_percent=max_percent,
+                fee_cost_wei=self.w3.to_wei(0.0001, "ether")
             )
 
-            amount_to_bridge = str(amount_wei).replace(str(amount_wei)[-4:], self.bridge_codes[destination_chain])
+            if ORBITER_CONTRACT == "":
+                logger.error(f"[{self.account_id}][{self.address}] Don't have orbiter contract")
+                return
 
-            tx_data = await self.get_tx_data(int(amount_to_bridge))
-            tx_data.update({"to": self.w3.to_checksum_address(ORBITER_CONTRACT)})
-
-            balance = await self.w3.eth.get_balance(self.address)
-
-            if tx_data["value"] >= balance:
-                logger.error(f"[{self.account_id}][{self.address}] Insufficient funds!")
+            if amount < 0.005 or amount > 5:
+                logger.error(
+                    f"[{self.account_id}][{self.address}] Limit range amount for bridge 0.005 – 5 ETH | {amount} ETH"
+                )
             else:
-                signed_txn = await self.sign(tx_data)
+                logger.info(
+                    f"[{self.account_id}][{self.address}] Bridge {self.chain} –> {destination_chain} | {amount} ETH"
+                )
 
-                txn_hash = await self.send_raw_transaction(signed_txn)
+                amount_to_bridge = str(amount_wei).replace(str(amount_wei)[-4:], self.bridge_codes[destination_chain])
 
-                await self.wait_until_tx_finished(txn_hash.hex())
+                tx_data = await self.get_tx_data(int(amount_to_bridge))
+                tx_data.update({"to": self.w3.to_checksum_address(ORBITER_CONTRACT)})
+
+                balance = await self.w3.eth.get_balance(self.address)
+
+                if tx_data["value"] >= balance:
+                    logger.error(f"[{self.account_id}][{self.address}] Insufficient funds!")
+                else:
+                    signed_txn = await self.sign(tx_data)
+
+                    txn_hash = await self.send_raw_transaction(signed_txn)
+
+                    await self.wait_until_tx_finished(txn_hash.hex())
+                return True
+        except Exception as e:
+            logger.error(
+                f"[{self.account_id}][{self.address}] Orbiter Bridge Error | {e}"
+            )
+
+        return False

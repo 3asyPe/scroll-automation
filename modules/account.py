@@ -1,23 +1,23 @@
 import asyncio
 import time
 import random
-from typing import Union, Type, Dict, Any
+from typing import Optional, Union, Type, Dict, Any
 
 from hexbytes import HexBytes
 from loguru import logger
-from web3 import AsyncWeb3
+from web3 import AsyncWeb3, Web3
 from eth_account import Account as EthereumAccount
 from web3.contract import Contract
 from web3.exceptions import TransactionNotFound
 from web3.middleware import async_geth_poa_middleware
 
 from config import RPC, ERC20_ABI, SCROLL_TOKENS
-from settings import GAS_MULTIPLIER, MAX_PRIORITY_FEE
+from settings import GAS_MULTIPLIER, MAX_ALL_AMOUNT_ETH_PERCENT, MAX_PRIORITY_FEE, MIN_ALL_AMOUNT_ETH_PERCENT, SCROLL_FEE_INACCURACY
 from utils.sleeping import sleep
 
 
 class Account:
-    def __init__(self, account_id: int, private_key: str, chain: str) -> None:
+    def __init__(self, account_id: int, private_key: str, proxy: str, chain: str) -> None:
         self.account_id = account_id
         self.private_key = private_key
         self.chain = chain
@@ -68,28 +68,60 @@ class Account:
         return {"balance_wei": balance_wei, "balance": balance, "symbol": symbol, "decimal": decimal}
 
     async def get_amount(
-            self,
-            from_token: str,
-            min_amount: float,
-            max_amount: float,
-            decimal: int,
-            all_amount: bool,
-            min_percent: int,
-            max_percent: int
-    ) -> [int, float, float]:
+        self,
+        from_token: str,
+        min_amount: float,
+        max_amount: float,
+        decimal: int,
+        all_amount: bool,
+        fee_cost_wei: float = 0,
+        additinal_fees: Optional[list] = None,
+        min_percent: int = MIN_ALL_AMOUNT_ETH_PERCENT,
+        max_percent: int = MAX_ALL_AMOUNT_ETH_PERCENT,
+    ):
         random_amount = round(random.uniform(min_amount, max_amount), decimal)
-        random_percent = random.randint(min_percent, max_percent)
-        percent = 1 if random_percent == 100 else random_percent / 100
 
         if from_token == "ETH":
             balance = await self.w3.eth.get_balance(self.address)
-            amount_wei = int(balance * percent) if all_amount else self.w3.to_wei(random_amount, "ether")
-            amount = self.w3.from_wei(int(balance * percent), "ether") if all_amount else random_amount
+
+            if fee_cost_wei:
+                add_fee = 0
+                if additinal_fees is not None:
+                    for fee in additinal_fees:
+                        add_fee += fee
+                value = (
+                    balance
+                    - fee_cost_wei
+                    - Web3.to_wei(add_fee + SCROLL_FEE_INACCURACY, "ether")
+                )
+            else:
+                value = (
+                    balance
+                    * random.uniform(
+                        min_percent,
+                        max_percent,
+                    )
+                    / 100
+                )
+
+            if value < 1:
+                logger.error(
+                    f"[{self.account_id}][{self.address}] Insufficient funds! | {value}"
+                )
+                raise Exception("Insufficient funds!")
+
+            amount_wei = (
+                int(value) if all_amount else Web3.to_wei(random_amount, "ether")
+            )
+            amount = Web3.from_wei(int(value), "ether") if all_amount else random_amount
         else:
             balance = await self.get_balance(SCROLL_TOKENS[from_token])
-            amount_wei = int(balance["balance_wei"] * percent) \
-                if all_amount else int(random_amount * 10 ** balance["decimal"])
-            amount = balance["balance"] * percent if all_amount else random_amount
+            amount_wei = (
+                balance["balance_wei"]
+                if all_amount
+                else int(random_amount * 10 ** balance["decimal"])
+            )
+            amount = balance["balance"] if all_amount else random_amount
             balance = balance["balance_wei"]
 
         return amount_wei, amount, balance

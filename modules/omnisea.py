@@ -20,28 +20,34 @@ class Omnisea(Account):
         symbol = "".join(random.sample([chr(i) for i in range(65, 91)], random.randint(3, 6)))
         return title, symbol
 
-    @retry
-    @check_gas
     async def create(self):
         logger.info(f"[{self.account_id}][{self.address}] Create NFT collection on Omnisea")
 
-        title, symbol = self.generate_collection_data()
+        try:
+            title, symbol = self.generate_collection_data()
 
-        tx_data = await self.get_tx_data()
+            tx_data = await self.get_tx_data()
 
-        transaction = await self.contract.functions.create([
-            title,
-            symbol,
-            "",
-            "",
-            0,
-            True,
-            0,
-            int(time.time()) + 1000000]
-        ).build_transaction(tx_data)
+            transaction = await self.contract.functions.create([
+                title,
+                symbol,
+                "",
+                "",
+                0,
+                True,
+                0,
+                int(time.time()) + 1000000]
+            ).build_transaction(tx_data)
 
-        signed_txn = await self.sign(transaction)
+            signed_txn = await self.sign(transaction)
 
-        txn_hash = await self.send_raw_transaction(signed_txn)
+            txn_hash = await self.send_raw_transaction(signed_txn)
 
-        await self.wait_until_tx_finished(txn_hash.hex())
+            await self.wait_until_tx_finished(txn_hash.hex())
+            return True
+        except Exception as e:
+            logger.error(
+                f"[{self.account_id}][{self.address}] Create NFT collection on Omnisea Error | {e}"
+            )
+
+        return False

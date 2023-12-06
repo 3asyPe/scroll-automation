@@ -133,56 +133,66 @@ class LayerSwap(Account):
 
                 return False
 
-    @retry
-    @check_gas
     async def bridge(
-            self,
-            from_chain: str,
-            to_chain: str,
-            min_amount: float,
-            max_amount: float,
-            decimal: int,
-            all_amount: bool,
-            min_percent: int,
-            max_percent: int
-    ):
-        amount_wei, amount, balance = await self.get_amount(
-            "ETH",
-            min_amount,
-            max_amount,
-            decimal,
-            all_amount,
-            min_percent,
-            max_percent
-        )
-
-        available_route = await self.check_available_route(from_chain, to_chain)
-
-        if available_route is False:
-            return
-
-        swap_rate = await self.get_swap_rate(from_chain, to_chain)
-
-        if amount < swap_rate["min_amount"] or amount > swap_rate["max_amount"]:
-            logger.error(
-                f"[{self.account_id}][{self.address}][{self.chain}] Limit range amount for bridge " +
-                f"{swap_rate['min_amount']} – {swap_rate['max_amount']} ETH | {amount} ETH"
+        self,
+        from_chain: str,
+        to_chain: str,
+        min_amount: float,
+        max_amount: float,
+        decimal: int,
+        all_amount: bool,
+        min_percent: int,
+        max_percent: int
+    ):  
+        try:
+            amount_wei, amount, balance = await self.get_amount(
+                "ETH",
+                min_amount,
+                max_amount,
+                decimal,
+                all_amount,
+                min_percent,
+                max_percent
             )
-            return
+            logger.info(
+                f"[{self.account_id}][{self.address}] Bridge on LayerSwap | " +
+                f"{self.w3.from_wei(amount, 'ether')} ETH"
+            )
 
-        if swap_rate is False:
-            return
+            available_route = await self.check_available_route(from_chain, to_chain)
 
-        swap_path = await self.get_swap_path(from_chain, to_chain, amount)
+            if available_route is False:
+                return
 
-        if swap_path is False:
-            return
+            swap_rate = await self.get_swap_rate(from_chain, to_chain)
 
-        tx_data = await self.get_tx_data(amount_wei)
-        tx_data.update({"to": self.w3.to_checksum_address(swap_path["deposit_address"])})
+            if amount < swap_rate["min_amount"] or amount > swap_rate["max_amount"]:
+                logger.error(
+                    f"[{self.account_id}][{self.address}][{self.chain}] Limit range amount for bridge " +
+                    f"{swap_rate['min_amount']} – {swap_rate['max_amount']} ETH | {amount} ETH"
+                )
+                return
 
-        signed_txn = await self.sign(tx_data)
+            if swap_rate is False:
+                return
 
-        txn_hash = await self.send_raw_transaction(signed_txn)
+            swap_path = await self.get_swap_path(from_chain, to_chain, amount)
 
-        await self.wait_until_tx_finished(txn_hash.hex())
+            if swap_path is False:
+                return
+
+            tx_data = await self.get_tx_data(amount_wei)
+            tx_data.update({"to": self.w3.to_checksum_address(swap_path["deposit_address"])})
+
+            signed_txn = await self.sign(tx_data)
+
+            txn_hash = await self.send_raw_transaction(signed_txn)
+
+            await self.wait_until_tx_finished(txn_hash.hex())
+            return True
+        except Exception as e:
+            logger.error(
+                f"[{self.account_id}][{self.address}] Bridge on LayerSwap Error | {e}"
+            )
+
+        return False

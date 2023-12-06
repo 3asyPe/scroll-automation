@@ -79,15 +79,21 @@ def main(module):
     if RANDOM_WALLET:
         random.shuffle(wallets)
 
-    with ThreadPoolExecutor(max_workers=QUANTITY_THREADS) as executor:
-        for _, account in enumerate(wallets, start=1):
-            executor.submit(
-                _async_run_module,
-                module,
-                account.get("id"),
-                account.get("key"),
-            )
-            time.sleep(random.randint(THREAD_SLEEP_FROM, THREAD_SLEEP_TO))
+    # with ThreadPoolExecutor(max_workers=QUANTITY_THREADS) as executor:
+    #     for _, account in enumerate(wallets, start=1):
+    #         executor.submit(
+    #             _async_run_module,
+    #             module,
+    #             account.get("id"),
+    #             account.get("key"),
+    #         )
+    #         time.sleep(random.randint(THREAD_SLEEP_FROM, THREAD_SLEEP_TO))
+    for _, account in enumerate(wallets, start=1):
+        _async_run_module(
+            module,
+            account.get("id"),
+            account.get("key"),
+        )
 
 
 if __name__ == '__main__':
