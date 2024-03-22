@@ -168,4 +168,6 @@ __pycache__/
 */__pycache__/
 .idea/
 
-accounts.txt
+data/wallets.txt
+data/okx_addresses.txt
+logs/*

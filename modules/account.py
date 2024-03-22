@@ -1,7 +1,7 @@
 import asyncio
 import time
 import random
-from typing import Optional, Union, Type, Dict, Any
+from typing import Optional, Union, Type, Any
 
 from hexbytes import HexBytes
 from loguru import logger
@@ -11,13 +11,18 @@ from web3.contract import Contract
 from web3.exceptions import TransactionNotFound
 from web3.middleware import async_geth_poa_middleware
 
-from config import RPC, ERC20_ABI, SCROLL_TOKENS
-from settings import GAS_MULTIPLIER, MAX_ALL_AMOUNT_ETH_PERCENT, MAX_PRIORITY_FEE, MIN_ALL_AMOUNT_ETH_PERCENT, SCROLL_FEE_INACCURACY
+from config import RPC, ERC20_ABI, SCROLL_TOKENS, SCROLL_FEE_INACCURACY
+from settings import (
+    GAS_MULTIPLIER,
+    MAX_ALL_AMOUNT_ETH_PERCENT,
+    MAX_PRIORITY_FEE,
+    MIN_ALL_AMOUNT_ETH_PERCENT,
+)
 from utils.sleeping import sleep
 
 
 class Account:
-    def __init__(self, account_id: int, private_key: str, proxy: str, chain: str) -> None:
+    def __init__(self, account_id: int, private_key: str, chain: str) -> None:
         self.account_id = account_id
         self.private_key = private_key
         self.chain = chain
@@ -26,7 +31,7 @@ class Account:
 
         self.w3 = AsyncWeb3(
             AsyncWeb3.AsyncHTTPProvider(random.choice(RPC[chain]["rpc"])),
-            middlewares=[async_geth_poa_middleware]
+            middlewares=[async_geth_poa_middleware],
         )
 
         self.account = EthereumAccount.from_key(private_key)
@@ -45,7 +50,9 @@ class Account:
 
         return tx
 
-    def get_contract(self, contract_address: str, abi=None) -> Union[Type[Contract], Contract]:
+    def get_contract(
+        self, contract_address: str, abi=None
+    ) -> Union[Type[Contract], Contract]:
         contract_address = self.w3.to_checksum_address(contract_address)
 
         if abi is None:
@@ -55,17 +62,46 @@ class Account:
 
         return contract
 
-    async def get_balance(self, contract_address: str) -> Dict:
-        contract_address = self.w3.to_checksum_address(contract_address)
+    async def get_balances(self, tokens=SCROLL_TOKENS) -> dict:
+        balances = {}
+
+        for symbol, contract in tokens.items():
+            await asyncio.sleep(0.3)
+            if symbol == "ETH":
+                balances[symbol] = await self.get_balance()
+            else:
+                balances[symbol] = await self.get_balance(contract)
+
+        return balances
+
+    async def get_balance(self, contract_address: Optional[str] = None) -> dict:
+        if contract_address is None:
+            balance_wei = await self.w3.eth.get_balance(self.address)
+            balance = AsyncWeb3.from_wei(balance_wei, "ether")
+
+            return {
+                "balance_wei": balance_wei,
+                "balance": balance,
+                "symbol": "ETH",
+                "decimal": 18,
+            }
+        contract_address = AsyncWeb3.to_checksum_address(contract_address)
         contract = self.get_contract(contract_address)
 
         symbol = await contract.functions.symbol().call()
+        await asyncio.sleep(0.1)
         decimal = await contract.functions.decimals().call()
+        await asyncio.sleep(0.1)
         balance_wei = await contract.functions.balanceOf(self.address).call()
 
-        balance = balance_wei / 10 ** decimal
+        balance = balance_wei / 10**decimal
 
-        return {"balance_wei": balance_wei, "balance": balance, "symbol": symbol, "decimal": decimal}
+        return {
+            "balance_wei": balance_wei,
+            "balance": balance,
+            "symbol": symbol,
+            "decimal": decimal,
+        }
 
     async def get_amount(
         self,
@@ -74,10 +110,10 @@ class Account:
         max_amount: float,
         decimal: int,
         all_amount: bool,
-        fee_cost_wei: float = 0,
-        additinal_fees: Optional[list] = None,
         min_percent: int = MIN_ALL_AMOUNT_ETH_PERCENT,
         max_percent: int = MAX_ALL_AMOUNT_ETH_PERCENT,
+        fee_cost_wei: float = 0,
+        additinal_fees: Optional[list] = None,
     ):
         random_amount = round(random.uniform(min_amount, max_amount), decimal)
 
@@ -131,11 +167,15 @@ class Account:
         contract_address = self.w3.to_checksum_address(contract_address)
 
         contract = self.w3.eth.contract(address=token_address, abi=ERC20_ABI)
-        amount_approved = await contract.functions.allowance(self.address, contract_address).call()
+        amount_approved = await contract.functions.allowance(
+            self.address, contract_address
+        ).call()
 
         return amount_approved
 
-    async def approve(self, amount: float, token_address: str, contract_address: str) -> None:
+    async def approve(
+        self, amount: float, token_address: str, contract_address: str
+    ) -> None:
         token_address = self.w3.to_checksum_address(token_address)
         contract_address = self.w3.to_checksum_address(contract_address)
 
@@ -146,13 +186,12 @@ class Account:
         if amount > allowance_amount or amount == 0:
             logger.success(f"[{self.account_id}][{self.address}] Make approve")
 
-            approve_amount = 2 ** 128 if amount > allowance_amount else 0
+            approve_amount = 2**128 if amount > allowance_amount else 0
 
             tx_data = await self.get_tx_data()
 
             transaction = await contract.functions.approve(
-                contract_address,
-                approve_amount
+                contract_address, approve_amount
             ).build_transaction(tx_data)
 
             signed_txn = await self.sign(transaction)
@@ -161,7 +200,52 @@ class Account:
 
             await self.wait_until_tx_finished(txn_hash.hex())
 
-            await sleep(5, 20)
+            await sleep(
+                account_id=self.account_id,
+                address=self.address,
+                sleep_from=5,
+                sleep_to=20,
+            )
+
+    async def wait_for_balance_increase(
+        self,
+        balance_wei: float,
+        increase_amount_wei: float,
+        chain="scroll",
+        timeout=24 * 60 * 60 + 30,
+        fee_inaccuracy=0.0015,
+        sleep=60,
+    ):
+        logger.info(
+            f"[{self.account_id}][{self.address}] Waiting for balance increase from {balance_wei / 10 ** 18} to {(balance_wei + increase_amount_wei) / 10 ** 18} on {chain} for {timeout} seconds"
+        )
+        start_time = time.time()
+
+        account = self
+        if chain != self.chain:
+            account = Account(
+                account_id=self.account_id,
+                private_key=self.private_key,
+                chain=chain,
+            )
+
+        while True:
+            if time.time() - start_time > timeout:
+                logger.error(
+                    f"[{self.account_id}][{self.address}] Timeout {timeout} seconds reached"
+                )
+                return False
+
+            new_balance = (await account.get_balance())["balance_wei"]
+            if new_balance >= balance_wei + increase_amount_wei - AsyncWeb3.to_wei(
+                fee_inaccuracy, "ether"
+            ):
+                logger.success(
+                    f"[{self.account_id}][{self.address}] Balance increased from {balance_wei / 10 ** 18} to {new_balance / 10 ** 18}"
+                )
+                return True
+
+            await asyncio.sleep(sleep)
 
     async def wait_until_tx_finished(self, hash: str, max_wait_time=180) -> None:
         start_time = time.time()
@@ -170,22 +254,33 @@ class Account:
                 receipts = await self.w3.eth.get_transaction_receipt(hash)
                 status = receipts.get("status")
                 if status == 1:
-                    logger.success(f"[{self.account_id}][{self.address}] {self.explorer}{hash} successfully!")
+                    logger.success(
+                        f"[{self.account_id}][{self.address}] {self.explorer}{hash} successfully!"
+                    )
                     return
                 elif status is None:
                     await asyncio.sleep(0.3)
                 else:
-                    logger.error(f"[{self.account_id}][{self.address}] {self.explorer}{hash} transaction failed!")
-                    return
+                    logger.error(
+                        f"[{self.account_id}][{self.address}] {self.explorer}{hash} transaction failed!"
+                    )
+                    raise Exception(f"Transaction failed! {self.explorer}{hash}")
             except TransactionNotFound:
                 if time.time() - start_time > max_wait_time:
-                    print(f'FAILED TX: {hash}')
+                    print(f"FAILED TX: {hash}")
                     return
                 await asyncio.sleep(1)
 
-    async def sign(self, transaction) -> Any:
+    async def sign(self, transaction, wait_for_gas=True) -> Any:
+        from utils.gas_checker import wait_gas
+
+        if wait_for_gas:
+            await wait_gas()
+
         if transaction.get("gasPrice", None) is None:
-            max_priority_fee_per_gas = self.w3.to_wei(MAX_PRIORITY_FEE["ethereum"], "gwei")
+            max_priority_fee_per_gas = self.w3.to_wei(
+                MAX_PRIORITY_FEE["ethereum"], "gwei"
+            )
             max_fee_per_gas = await self.w3.eth.gas_price
 
             transaction.update(

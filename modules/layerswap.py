@@ -26,7 +26,9 @@ class LayerSwap(Account):
 
         self.headers = {"X-LS-APIKEY": LAYERSWAP_API_KEY}
 
-    async def check_available_route(self, from_chain: str, to_chain: str) -> Union[Dict, bool]:
+    async def check_available_route(
+        self, from_chain: str, to_chain: str
+    ) -> Union[Dict, bool]:
         url = "https://api.layerswap.io/api/available_routes"
 
         params = {
@@ -45,11 +47,15 @@ class LayerSwap(Account):
                 if transaction_data["data"]:
                     return transaction_data["data"]
                 else:
-                    logger.error(f"[{self.account_id}][{self.address}][{self.chain}] Layerswap path not found")
+                    logger.error(
+                        f"[{self.account_id}][{self.address}][{self.chain}] Layerswap path not found"
+                    )
 
                     return False
             else:
-                logger.error(f"[{self.account_id}][{self.address}][{self.chain}] Bad layerswap request")
+                logger.error(
+                    f"[{self.account_id}][{self.address}][{self.chain}] Bad layerswap request"
+                )
 
                 return False
 
@@ -61,7 +67,7 @@ class LayerSwap(Account):
             "source_asset": "ETH",
             "destination": self.networks[to_chain],
             "destination_asset": "ETH",
-            "refuel": False
+            "refuel": False,
         }
 
         async with aiohttp.ClientSession() as session:
@@ -73,15 +79,21 @@ class LayerSwap(Account):
                 if transaction_data["data"]:
                     return transaction_data["data"]
                 else:
-                    logger.error(f"[{self.account_id}][{self.address}][{self.chain}] Layerswap swap rate error")
+                    logger.error(
+                        f"[{self.account_id}][{self.address}][{self.chain}] Layerswap swap rate error"
+                    )
 
                     return False
             else:
-                logger.error(f"[{self.account_id}][{self.address}][{self.chain}] Bad layerswap request")
+                logger.error(
+                    f"[{self.account_id}][{self.address}][{self.chain}] Bad layerswap request"
+                )
 
                 return False
 
-    async def create_swap(self, from_chain: str, to_chain: str, amount: float) -> Union[Dict, bool]:
+    async def create_swap(
+        self, from_chain: str, to_chain: str, amount: float
+    ) -> Union[Dict, bool]:
         url = "https://api.layerswap.io/api/swaps"
 
         params = {
@@ -91,7 +103,7 @@ class LayerSwap(Account):
             "destination_asset": "ETH",
             "refuel": False,
             "amount": float(amount),
-            "destination_address": self.address
+            "destination_address": self.address,
         }
 
         async with aiohttp.ClientSession() as session:
@@ -103,15 +115,21 @@ class LayerSwap(Account):
                 if transaction_data["data"]:
                     return transaction_data["data"]["swap_id"]
                 else:
-                    logger.error(f"[{self.account_id}][{self.address}][{self.chain}] Layerswap swap rate error")
+                    logger.error(
+                        f"[{self.account_id}][{self.address}][{self.chain}] Layerswap swap rate error"
+                    )
 
                     return False
             else:
-                logger.error(f"[{self.account_id}][{self.address}][{self.chain}] Bad layerswap request")
+                logger.error(
+                    f"[{self.account_id}][{self.address}][{self.chain}] Bad layerswap request"
+                )
 
                 return False
 
-    async def get_swap_path(self, from_chain: str, to_chain: str, amount: float) -> Union[Dict, bool]:
+    async def get_swap_path(
+        self, from_chain: str, to_chain: str, amount: float
+    ) -> Union[Dict, bool]:
         swap_id = await self.create_swap(from_chain, to_chain, amount)
 
         url = f"https://api.layerswap.io/api/swaps/{swap_id}"
@@ -125,25 +143,29 @@ class LayerSwap(Account):
                 if transaction_data["data"]:
                     return transaction_data["data"]
                 else:
-                    logger.error(f"[{self.account_id}][{self.address}][{self.chain}] Layerswap swap rate error")
+                    logger.error(
+                        f"[{self.account_id}][{self.address}][{self.chain}] Layerswap swap rate error"
+                    )
 
                     return False
             else:
-                logger.error(f"[{self.account_id}][{self.address}][{self.chain}] Bad layerswap request")
+                logger.error(
+                    f"[{self.account_id}][{self.address}][{self.chain}] Bad layerswap request"
+                )
 
                 return False
 
+    @retry
     async def bridge(
         self,
-        from_chain: str,
         to_chain: str,
         min_amount: float,
         max_amount: float,
         decimal: int,
         all_amount: bool,
         min_percent: int,
-        max_percent: int
-    ):  
+        max_percent: int,
+    ):
         try:
             amount_wei, amount, balance = await self.get_amount(
                 "ETH",
@@ -152,47 +174,64 @@ class LayerSwap(Account):
                 decimal,
                 all_amount,
                 min_percent,
-                max_percent
+                max_percent,
             )
             logger.info(
-                f"[{self.account_id}][{self.address}] Bridge on LayerSwap | " +
-                f"{self.w3.from_wei(amount, 'ether')} ETH"
+                f"[{self.account_id}][{self.address}] Bridge on LayerSwap {self.chain} -> {to_chain} | "
+                + f"{self.w3.from_wei(amount, 'ether')} ETH"
             )
 
-            available_route = await self.check_available_route(from_chain, to_chain)
+            dst_account = Account(
+                account_id=self.account_id,
+                private_key=self.private_key,
+                chain=to_chain,
+            )
+            cur_dst_balance_wei = await dst_account.w3.eth.get_balance(
+                dst_account.address
+            )
+
+            available_route = await self.check_available_route(self.chain, to_chain)
 
             if available_route is False:
                 return
 
-            swap_rate = await self.get_swap_rate(from_chain, to_chain)
+            swap_rate = await self.get_swap_rate(self.chain, to_chain)
 
             if amount < swap_rate["min_amount"] or amount > swap_rate["max_amount"]:
                 logger.error(
-                    f"[{self.account_id}][{self.address}][{self.chain}] Limit range amount for bridge " +
-                    f"{swap_rate['min_amount']} – {swap_rate['max_amount']} ETH | {amount} ETH"
+                    f"[{self.account_id}][{self.address}][{self.chain}] Limit range amount for bridge "
+                    + f"{swap_rate['min_amount']} – {swap_rate['max_amount']} ETH | {amount} ETH"
                 )
                 return
 
             if swap_rate is False:
                 return
 
-            swap_path = await self.get_swap_path(from_chain, to_chain, amount)
+            swap_path = await self.get_swap_path(self.chain, to_chain, amount)
 
             if swap_path is False:
                 return
 
             tx_data = await self.get_tx_data(amount_wei)
-            tx_data.update({"to": self.w3.to_checksum_address(swap_path["deposit_address"])})
+            tx_data.update(
+                {"to": self.w3.to_checksum_address(swap_path["deposit_address"])}
+            )
 
             signed_txn = await self.sign(tx_data)
 
             txn_hash = await self.send_raw_transaction(signed_txn)
 
             await self.wait_until_tx_finished(txn_hash.hex())
-            return True
+
+            await self.wait_for_balance_increase(
+                balance_wei=cur_dst_balance_wei,
+                increase_amount_wei=tx_data["value"],
+                chain=to_chain,
+            )
         except Exception as e:
             logger.error(
                 f"[{self.account_id}][{self.address}] Bridge on LayerSwap Error | {e}"
             )
+            raise e
 
-        return False
+        return True

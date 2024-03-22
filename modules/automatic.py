@@ -1,24 +1,39 @@
 import enum
 import random
 from copy import deepcopy
+import traceback
 
 from loguru import logger
 from web3 import Web3
-from config import ZKSYNC_TOKENS
+from config import SCROLL_TOKENS
 from modules import *
+from settings import (
+    ENABLE_ERROR_TRACEBACK,
+    RETRIES,
+    RETRY_DELAY_MAX,
+    RETRY_DELAY_MIN,
+    SLEEP_MAX,
+    SLEEP_MIN,
+)
 from utils.sleeping import sleep
 
 
 class AutomaticModules(str, enum.Enum):
     swaps = "swaps"
-    add_liquidity = "add_liquidity"
-    mint_nft = "mint_nft"
     wrap_unwrap_eth = "wrap_unwrap_eth"
     send_email = "send_email"
-    deploy = "deploy"
+    mint_l2pass = "mint_l2pass"
+    mint_bridge_l2_telegraph = "mint_l2_telegraph"
+    l2telegraph_send_message = "l2telegraph_send_message"
+    create_gnosis_safe = "create_gnosis_safe"
+    create_omnisea_collection = "create_omnisea_collection"
+    aave = "aave"
     layerbank = "layerbank"
-    omnisea = "omnisea"
+    mint_nfts2me = "mint_nfts2me"
     mint_zerius = "mint_zerius"
+    mint_zkstars = "mint_zkstars"
+    rubyscore_vote = "rubyscore_vote"
+    deploy_contract = "deploy_contract"
     bridge_in = "bridge_in"
     bridge_out = "bridge_out"
 
@@ -33,7 +48,6 @@ class Automatic(Account):
         self,
         account_id,
         private_key,
-        proxy,
         okx_address,
         modules: list,
         config: dict,
@@ -44,13 +58,10 @@ class Automatic(Account):
         config - dict with settings and with configs for modules
         modules_config - config for modules
         """
-        super().__init__(
-            account_id=account_id, private_key=private_key, chain="scroll", proxy=proxy
-        )
+        super().__init__(account_id=account_id, private_key=private_key, chain="scroll")
 
         self.account_id = account_id
         self.private_key = private_key
-        self.proxy = proxy
         self.okx_address = okx_address
         self.config = deepcopy(config)
         self.modules_config = deepcopy(modules_config)
@@ -64,45 +75,50 @@ class Automatic(Account):
 
         self.modules_mapping = {
             AutomaticModules.swaps: self.swaps,
-            AutomaticModules.send_email: self.send_email,
             AutomaticModules.wrap_unwrap_eth: self.wrap_unwrap_eth,
-            AutomaticModules.mint_nft: self.mint_nft,
-            AutomaticModules.deploy: self.deploy_and_mint,
+            AutomaticModules.send_email: self.send_email,
+            AutomaticModules.aave: self.aave,
             AutomaticModules.layerbank: self.layerbank,
-            AutomaticModules.omnisea: self.create_omnisea,
+            AutomaticModules.mint_bridge_l2_telegraph: self.mint_bridge_l2_telegraph,
+            AutomaticModules.l2telegraph_send_message: self.l2telegraph_send_message,
+            AutomaticModules.mint_l2pass: self.mint_l2pass,
+            AutomaticModules.mint_nfts2me: self.mint_nfts2me,
             AutomaticModules.mint_zerius: self.mint_zerius,
+            AutomaticModules.mint_zkstars: self.mint_zkstars,
+            AutomaticModules.rubyscore_vote: self.rubyscore_vote,
+            AutomaticModules.deploy_contract: self.deploy_contract,
+            AutomaticModules.create_gnosis_safe: self.create_gnosis_safe,
+            AutomaticModules.create_omnisea_collection: self.create_omnisea_collection,
         }
 
         self.made_first_transaction = False
 
-    def run(self):
-        if self.config["deposit_enabled"]:
-            if self.config["okx_withdraw_enabled"]:
-                self.okx_withdraw()
+    async def run(self):
+        if self.config["okx_withdraw_enabled"]:
+            await self.okx_withdraw()
 
-            if self.config[AutomaticModules.bridge_in]["bridge_in_enabled"]:
-                self.bridge_in()
+        if self.config[AutomaticModules.bridge_in]["bridge_in_enabled"]:
+            await self.bridge_in()
 
-        self.run_modules()
+        await self.run_modules()
 
         if self.config["swap_all_tokens_to_eth_before_withdraw"]:
-            self.swap_all_tokens_to_eth()
+            await self.swap_all_tokens_to_eth()
 
-        if self.config["withdraw_enabled"]:
-            if self.config[AutomaticModules.bridge_out]["bridge_out_enabled"]:
-                self.bridge_out()
+        if self.config[AutomaticModules.bridge_out]["bridge_out_enabled"]:
+            await self.bridge_out()
 
-            if self.config["okx_deposit_enabled"]:
-                self.okx_deposit()
+        if self.config["okx_deposit_enabled"]:
+            await self.okx_deposit()
 
-    def run_modules(self):
+    async def run_modules(self):
         while len(self.modules_entries) > 0:
             module_entry = random.choice(self.modules_entries)
 
             if module_entry.module_name in self.modules_mapping:
-                performed_transactions = self.modules_mapping[module_entry.module_name](
-                    module_entry.config
-                )
+                performed_transactions = await self.modules_mapping[
+                    module_entry.module_name
+                ](module_entry.config)
                 self._remove_module_entries(
                     module_entry.module_name, performed_transactions
                 )
@@ -110,65 +126,100 @@ class Automatic(Account):
                 logger.error(f"Not supported module - {module_entry.module_name}")
                 self._remove_module_entries(module_entry.module_name, 1, all=True)
 
-    def run_module(
+    async def execute_func_with_retries(
+        self, func, func_kwargs, module_name, max_retries=RETRIES
+    ):
+        done = False
+        retries = 0
+        while not done and retries <= max_retries:
+            try:
+                done = await func(**func_kwargs)
+            except Exception as e:
+                if ENABLE_ERROR_TRACEBACK:
+                    logger.error(
+                        f"[{self.account_id}][{self.address}] | {module_name} raised exception | {e}\nTraceback: {traceback.format_exc()}"
+                    )
+                else:
+                    logger.error(
+                        f"[{self.account_id}][{self.address}] | {module_name} raised exception | {e}"
+                    )
+                if str(e).startswith("520, "):
+                    logger.error(
+                        f"Probably an rpc error, I am not increasing the retry count"
+                    )
+                else:
+                    retries += 1
+
+            if not done:
+                if retries <= max_retries:
+                    logger.error(
+                        f"[{self.account_id}][{self.address}] | {module_name} failed. Retrying {retries}/{max_retries}"
+                    )
+
+                    await sleep(
+                        account_id=self.account_id,
+                        address=self.address,
+                        sleep_from=RETRY_DELAY_MIN,
+                        sleep_to=RETRY_DELAY_MAX,
+                    )
+
+        return done
+
+    async def run_module(
         self,
-        module,
+        module_function,
         module_name,
         module_transaction_id,
-        kwargs,
+        function_kwargs,
         max_retries=None,
         fail_after_retries=False,
+        module_class=None,
+        class_kwargs=None,
     ):
         logger.info(
             f"[{self.account_id}][{self.address}] | Performing {module_name} #{module_transaction_id}"
         )
 
-        retries = 0
-        max_retries = max_retries if max_retries is not None else self.config["retries"]
+        max_retries = max_retries if max_retries is not None else RETRIES
 
         if self.made_first_transaction or self.config["sleep_at_start"]:
-            sleep(
+            await sleep(
                 account_id=self.account_id,
                 address=self.address,
-                sleep_from=self.config["sleep_min"],
-                sleep_to=self.config["sleep_max"],
+                sleep_from=SLEEP_MIN,
+                sleep_to=SLEEP_MAX,
             )
 
-        done = False
-        while not done and retries <= max_retries:
-            # try:
-            done = module(**kwargs)
-            # except Exception as e:
-            #     logger.error(
-            #         f"[{self.account_id}][{self.address}] | {module_name} raised exception | {e}"
-            #     )
+        if module_class is not None:
+            if class_kwargs is None:
+                class_kwargs = {
+                    "account_id": self.account_id,
+                    "private_key": self.private_key,
+                }
+            func = module_class(**class_kwargs).__getattribute__(module_function)
+        else:
+            func = module_function
 
-            if not done:
-                retries += 1
-                logger.error(
-                    f"[{self.account_id}][{self.address}] | {module_name} failed. Retrying #{retries}"
-                )
-
-                sleep(
-                    account_id=self.account_id,
-                    address=self.address,
-                    sleep_from=self.config["retry_delay_min"],
-                    sleep_to=self.config["retry_delay_max"],
-                )
+        done = await self.execute_func_with_retries(
+            func=func,
+            func_kwargs=function_kwargs,
+            max_retries=max_retries,
+            module_name=module_name,
+        )
 
         self.made_first_transaction = True
 
         if not done and fail_after_retries:
-            raise ValueError(f"{module_name} failed after {retries} retries")
+            raise ValueError(f"{module_name} failed after {max_retries} retries")
 
         return done or self.config["skip_if_failed"]
 
-    def swap_all_tokens_to_eth(self):
+    async def swap_all_tokens_to_eth(self):
         config = self.config[AutomaticModules.swaps]
 
         logger.info(f"[{self.account_id}][{self.address}] | Swapping all tokens to ETH")
 
-        balances = self.get_balances(config)
+        balances = await self.get_balances(config)
 
         for token in balances.values():
             if (
@@ -183,116 +234,118 @@ class Automatic(Account):
             swap_module = self.choose_swap_module(
                 config=config, src_token=src_token, dst_token=dst_token
             )
-            amount = self.choose_swap_amount(config=config, src_token=src_token)
-            return swap_module["class"](
-                account_id=self.account_id,
-                private_key=self.private_key,
-                proxy=self.proxy,
-            ).swap(
-                from_token=src_token["symbol"],
-                to_token=dst_token["symbol"],
-                min_amount=amount if amount != "all" else 0,
-                max_amount=amount if amount != "all" else 0,
-                decimal=src_token["decimal"],
-                slippage=self.modules_config[swap_module["name"]]["slippage"],
-                all_amount=amount == "all",
+            amount = self.get_amount(config=config, src_token=src_token)
+            return await self.execute_func_with_retries(
+                func=swap_module["class"](
+                    account_id=self.account_id,
+                    private_key=self.private_key,
+                ).swap,
+                func_kwargs={
+                    "from_token": src_token["symbol"].upper(),
+                    "to_token": dst_token["symbol"].upper(),
+                    "min_amount": amount if amount != "all" else 0,
+                    "max_amount": amount if amount != "all" else 0,
+                    "decimal": src_token["decimal"],
+                    "slippage": self.modules_config[swap_module["name"]]["slippage"],
+                    "all_amount": amount == "all",
+                    "min_percent": self.modules_config[swap_module["name"]][
+                        "min_percent"
+                    ],
+                    "max_percent": self.modules_config[swap_module["name"]][
+                        "max_percent"
+                    ],
+                },
+                module_name="Swap all tokens to ETH",
             )
 
-    def swaps(self, config):
-        quantity = self.choose_number_of_swaps(config=config)
-        config["current_max_quantity"] = quantity
-
-        performed_quantity = 0
-
-        for _ in range(quantity):
-            fail_after_retries = False
-            if (
-                config["performed_quantity"] == 0
-                and config["raise_error_if_first_swap_from_eth_failed"]
-            ):
-                fail_after_retries = True
-
-            done = self.run_module(
-                module=self.swap,
-                module_name="Swap",
-                module_transaction_id=config["performed_quantity"] + 1,
-                kwargs={"config": config},
-                fail_after_retries=fail_after_retries,
-            )
-
-            if not done:
-                logger.info(
-                    f"[{self.account_id}][{self.address}] | Swap #{config['performed_quantity'] + 1} failed. Skipping"
-                )
-            else:
-                performed_quantity += 1
-                config["performed_quantity"] += 1
-
-        return performed_quantity
-
-    def deploy_and_mint(self, config):
-        if self.run_module(
-            module=Deployer(
+    async def deploy_contract(self, config):
+        if await self.run_module(
+            module_function=Deployer(
                 account_id=self.account_id,
                 private_key=self.private_key,
-                proxy=self.proxy,
-                chain="zksync",
             ).deploy_token,
-            module_name="Deploy and mint",
+            module_name="Deploy Contract",
             module_transaction_id=config["performed_quantity"] + 1,
-            kwargs={},
+            function_kwargs={
+                "contracts": self.modules_config[MODULES_NAMES.deploy_contract][
+                    "contracts"
+                ],
+            },
         ):
             config["performed_quantity"] += 1
             return 1
 
         return 0
-    
-    def layerbank(self, config):
+
+    async def rubyscore_vote(self, config):
+        if await self.run_module(
+            module_function=RubyScore(
+                account_id=self.account_id,
+                private_key=self.private_key,
+            ).vote,
+            module_name="RubyScore Vote",
+            module_transaction_id=config["performed_quantity"] + 1,
+            function_kwargs={},
+        ):
+            config["performed_quantity"] += 1
+            return 1
+
+        return 0
+
+    async def send_email(self, config):
+        if await self.run_module(
+            module_class=Dmail,
+            module_function="send_mail",
+            module_name="Send Dmail",
+            module_transaction_id=config["performed_quantity"] + 1,
+            function_kwargs={},
+        ):
+            config["performed_quantity"] += 1
+            return 1
+
+        return 0
+
+    async def run_deposit_withdraw(
+        self,
+        config,
+        deposit_func,
+        deposit_func_kwargs,
+        withdraw_func,
+        withdraw_func_kwargs,
+        module_name,
+    ):
         performed_quantity = 0
 
         if config.get("withdrawn", True):
             try:
-                self.run_module(
-                    module=LayerBank(
-                        account_id=self.account_id,
-                        private_key=self.private_key,
-                        proxy=self.proxy,
-                    ).deposit,
-                    module_name="LayerBank deposit",
+                done = await self.run_module(
+                    module_function=deposit_func,
+                    module_name=f"{module_name} Deposit",
                     module_transaction_id=round(config["performed_quantity"] / 2) + 1,
-                    kwargs={
-                        "min_amount": 1,
-                        "max_amount": 1,
-                        "decimal": 6,
-                        "all_amount": True,
-                        "sleep_from": 1,
-                        "sleep_to": 1,
-                        "make_withdraw": False,
-                        "min_percent": self.modules_config[MODULES_NAMES.layerbank]["min_percent"],
-                        "max_percent": self.modules_config[MODULES_NAMES.layerbank]["max_percent"],
-                    },
+                    function_kwargs=deposit_func_kwargs,
                     fail_after_retries=True,
                 )
                 performed_quantity += 1
-            except Exception:
-                logger.error(
-                    f"[{self.account_id}][{self.address}] | LayerBank deposit Failed. Skipping Withdraw"
-                )
+            except Exception as e:
+                if ENABLE_ERROR_TRACEBACK:
+                    logger.error(
+                        f"[{self.account_id}][{self.address}] | {module_name} Deposit raised exception | {e}\nTraceback: {traceback.format_exc()}"
+                    )
+                else:
+                    logger.error(
+                        f"[{self.account_id}][{self.address}] | {module_name} Deposit raised exception | {e}"
+                    )
 
                 if self.config["skip_if_failed"]:
                     config["performed_quantity"] += 2
                     return 2
                 return 0
 
-        done = self.run_module(
-            module=LayerBank(
-                account_id=self.account_id,
-                private_key=self.private_key,
-                proxy=self.proxy,
-            ).withdraw,
-            module_name="LayerBank withdraw",
+        done = await self.run_module(
+            module_function=withdraw_func,
+            function_kwargs=withdraw_func_kwargs,
+            module_name=f"{module_name} Withdraw",
             module_transaction_id=round(config["performed_quantity"] / 2) + 1,
-            kwargs={},
         )
 
         if done:
@@ -305,100 +358,247 @@ class Automatic(Account):
 
         return performed_quantity
 
-    def create_omnisea(self, config):
-        if self.run_module(
-            module=Omnisea(
-                account_id=self.account_id,
-                private_key=self.private_key,
-                proxy=self.proxy,
-            ).create,
-            module_name="Create OmniSea NFT Collection",
-            module_transaction_id=config["performed_quantity"] + 1,
-            kwargs={},
-        ):
-            config["performed_quantity"] += 1
-            return 1
-
-        return 0
-
-    def mint_zerius(self, config):
-        if self.run_module(
-            module=Zerius(
-                account_id=self.account_id,
-                private_key=self.private_key,
-                proxy=self.proxy,
-            ).mint,
-            module_name="Mint NFT",
-            module_transaction_id=config["performed_quantity"] + 1,
-            kwargs=self.modules_config[MODULES_NAMES.mint_nft],
-        ):
-            config["performed_quantity"] += 1
-            return 1
-
-        return 0
-
-    def mint_nft(self, config):
-        if self.run_module(
-            module=Minter(
-                account_id=self.account_id,
-                private_key=self.private_key,
-                proxy=self.proxy,
-            ).mint_nft,
-            module_name="Mint NFT",
-            module_transaction_id=config["performed_quantity"] + 1,
-            kwargs=self.modules_config[MODULES_NAMES.mint_nft],
-        ):
-            config["performed_quantity"] += 1
-            return 1
-
-        return 0
-
-    def send_email(self, config):
-        if self.run_module(
-            module=Dmail(
-                account_id=self.account_id,
-                private_key=self.private_key,
-                proxy=self.proxy,
-            ).send_mail,
-            module_name="Send Dmail",
-            module_transaction_id=config["performed_quantity"] + 1,
-            kwargs={},
-        ):
-            config["performed_quantity"] += 1
-            return 1
-
-        return 0
-
-    def wrap_unwrap_eth(self, config):
-        scroll_client = Scroll(
-            account_id=self.account_id,
-            private_key=self.private_key,
-            proxy=self.proxy,
-            chain="scroll",
+    async def aave(self, config):
+        return await self.run_deposit_withdraw(
+            config=config,
+            deposit_func=Aave(self.account_id, self.private_key).deposit,
+            deposit_func_kwargs={
+                "min_amount": 1,
+                "max_amount": 1,
+                "decimal": 6,
+                "all_amount": True,
+                "sleep_from": 1,
+                "sleep_to": 1,
+                "make_withdraw": False,
+                "min_percent": self.modules_config[MODULES_NAMES.deposit_aave][
+                    "min_percent"
+                ],
+                "max_percent": self.modules_config[MODULES_NAMES.deposit_aave][
+                    "max_percent"
+                ],
+            },
+            withdraw_func=Aave(self.account_id, self.private_key).withdraw,
+            withdraw_func_kwargs={},
+            module_name="Aave",
         )
 
+    async def layerbank(self, config):
+        return await self.run_deposit_withdraw(
+            config=config,
+            deposit_func=LayerBank(self.account_id, self.private_key).deposit,
+            deposit_func_kwargs={
+                "min_amount": 1,
+                "max_amount": 1,
+                "decimal": 6,
+                "all_amount": True,
+                "sleep_from": 1,
+                "sleep_to": 1,
+                "make_withdraw": False,
+                "min_percent": self.modules_config[MODULES_NAMES.deposit_layerbank][
+                    "min_percent"
+                ],
+                "max_percent": self.modules_config[MODULES_NAMES.deposit_layerbank][
+                    "max_percent"
+                ],
+            },
+            withdraw_func=LayerBank(self.account_id, self.private_key).withdraw,
+            withdraw_func_kwargs={},
+            module_name="LayerBank",
+        )
+
+    async def l2telegraph_send_message(self, config):
+        if await self.run_module(
+            module_function=L2Telegraph(
+                account_id=self.account_id,
+                private_key=self.private_key,
+            ).send_message,
+            module_name="L2Telegraph Send message",
+            module_transaction_id=config["performed_quantity"] + 1,
+            function_kwargs={
+                "use_chain": self.modules_config[
+                    MODULES_NAMES.send_message_l2telegraph
+                ]["use_chain"]
+            },
+        ):
+            config["performed_quantity"] += 1
+            return 1
+
+        return 0
+
+    async def create_omnisea_collection(self, config):
+        if await self.run_module(
+            module_function=Omnisea(
+                account_id=self.account_id,
+                private_key=self.private_key,
+            ).create,
+            module_name="Create Omnisea Collection",
+            module_transaction_id=config["performed_quantity"] + 1,
+            function_kwargs={},
+        ):
+            config["performed_quantity"] += 1
+            return 1
+
+        return 0
+
+    async def create_gnosis_safe(self, config):
+        if await self.run_module(
+            module_function=GnosisSafe(
+                account_id=self.account_id,
+                private_key=self.private_key,
+            ).create_safe,
+            module_name="Create Gnosis safe",
+            module_transaction_id=config["performed_quantity"] + 1,
+            function_kwargs={},
+        ):
+            config["performed_quantity"] += 1
+            return 1
+
+        return 0
+
+    async def mint_bridge_l2_telegraph(self, config):
+        if config["bridge"]:
+            module_function = L2Telegraph(
+                account_id=self.account_id,
+                private_key=self.private_key,
+            ).bridge
+            module_name = "L2Telegraph Bridge mint"
+            function_kwargs = {
+                "use_chain": self.modules_config[MODULES_NAMES.mint_bridge_l2telegraph][
+                    "use_chain"
+                ],
+                "sleep_from": SLEEP_MIN,
+                "sleep_to": SLEEP_MAX,
+            }
+        else:
+            module_function = L2Telegraph(
+                account_id=self.account_id,
+                private_key=self.private_key,
+            ).mint
+            module_name = "L2Telegraph mint"
+            function_kwargs = {}
+
+        if await self.run_module(
+            module_function=module_function,
+            module_name=module_name,
+            module_transaction_id=config["performed_quantity"] + 1,
+            function_kwargs=function_kwargs,
+        ):
+            config["performed_quantity"] += 1
+            return 1
+
+        return 0
+
+    async def mint_zerius(self, config):
+        if await self.run_module(
+            module_function=Zerius(
+                account_id=self.account_id,
+                private_key=self.private_key,
+            ).mint,
+            module_name="Mint Zerius",
+            module_transaction_id=config["performed_quantity"] + 1,
+            function_kwargs={},
+        ):
+            config["performed_quantity"] += 1
+            return 1
+
+        return 0
+
+    async def mint_zkstars(self, config):
+        if await self.run_module(
+            module_function=ZkStars(
+                account_id=self.account_id,
+                private_key=self.private_key,
+            ).mint,
+            module_name="Mint ZkStars",
+            module_transaction_id=config["performed_quantity"] + 1,
+            function_kwargs={
+                "contracts": [
+                    random.choice(
+                        self.modules_config[MODULES_NAMES.mint_zkstars]["contracts"]
+                    )
+                ],
+                "min_mint": 1,
+                "max_mint": 1,
+                "mint_all": False,
+                "sleep_from": 1,
+                "sleep_to": 1,
+            },
+        ):
+            config["performed_quantity"] += 1
+            return 1
+
+        return 0
+
+    async def mint_nfts2me(self, config):
+        if await self.run_module(
+            module_function=Minter(
+                account_id=self.account_id,
+                private_key=self.private_key,
+            ).mint_nft,
+            module_name="Mint NFTs2ME",
+            module_transaction_id=config["performed_quantity"] + 1,
+            function_kwargs={
+                "contracts": self.modules_config[MODULES_NAMES.mint_nfts2me][
+                    "contracts"
+                ],
+            },
+        ):
+            config["performed_quantity"] += 1
+            return 1
+
+        return 0
+
+    async def mint_l2pass(self, config):
+        if await self.run_module(
+            module_function=L2Pass(
+                account_id=self.account_id,
+                private_key=self.private_key,
+            ).mint,
+            module_name="Mint L2Pass",
+            module_transaction_id=config["performed_quantity"] + 1,
+            function_kwargs={},
+        ):
+            config["performed_quantity"] += 1
+            return 1
+
+        return 0
+
+    async def wrap_unwrap_eth(self, config):
         performed_quantity = 0
 
         if config.get("unwraped", True):
             try:
-                self.run_module(
-                    scroll_client.wrap_eth,
-                    module_name="Wrap ETH",
-                    module_transaction_id=round(config["performed_quantity"] / 2) + 1,
-                    kwargs={
-                        "min_amount": 1,
-                        "max_amount": 1,
-                        "decimal": 4,
-                        "all_amount": True,
-                        "min_percent": self.modules_config[MODULES_NAMES.wrap_eth]["min_percent"],
-                        "max_percent": self.modules_config[MODULES_NAMES.wrap_eth]["max_percent"],
+                await self.run_module(
+                    module_class=Scroll,
+                    module_function="wrap_eth",
+                    module_name="Wrap Eth",
+                    function_kwargs={
+                        "min_amount": self.modules_config[MODULES_NAMES.wrap_eth][
+                            "min_amount"
+                        ],
+                        "max_amount": self.modules_config[MODULES_NAMES.wrap_eth][
+                            "max_amount"
+                        ],
+                        "decimal": self.modules_config[MODULES_NAMES.wrap_eth][
+                            "decimal"
+                        ],
+                        "all_amount": self.modules_config[MODULES_NAMES.wrap_eth][
+                            "all_amount"
+                        ],
+                        "min_percent": self.modules_config[MODULES_NAMES.wrap_eth][
+                            "min_percent"
+                        ],
+                        "max_percent": self.modules_config[MODULES_NAMES.wrap_eth][
+                            "max_percent"
+                        ],
                     },
+                    module_transaction_id=round(config["performed_quantity"] / 2) + 1,
                     fail_after_retries=True,
                 )
                 performed_quantity += 1
-            except Exception:
+            except Exception as e:
                 logger.error(
-                    f"[{self.account_id}][{self.address}] | Wrap ETH failed. Skipping Unwrap"
+                    f"[{self.account_id}][{self.address}] | Wrap ETH failed. Skipping Unwrap | {e}"
                 )
 
                 if self.config["skip_if_failed"]:
@@ -406,18 +606,23 @@ class Automatic(Account):
                     return 2
                 return 0
 
-        done = self.run_module(
-            scroll_client.unwrap_eth,
-            module_name="Unwrap ETH",
-            module_transaction_id=round(config["performed_quantity"] / 2) + 1,
-            kwargs={
+        done = await self.run_module(
+            module_class=Scroll,
+            module_function="unwrap_eth",
+            module_name="Unwrap Eth",
+            function_kwargs={
                 "min_amount": 1,
                 "max_amount": 1,
                 "decimal": 4,
                 "all_amount": True,
-                "min_percent": self.modules_config[MODULES_NAMES.unwrap_eth]["min_percent"],
-                "max_percent": self.modules_config[MODULES_NAMES.unwrap_eth]["max_percent"],
+                "min_percent": self.modules_config[MODULES_NAMES.unwrap_eth][
+                    "min_percent"
+                ],
+                "max_percent": self.modules_config[MODULES_NAMES.unwrap_eth][
+                    "max_percent"
+                ],
             },
+            module_transaction_id=round(config["performed_quantity"] / 2) + 1,
         )
 
         if done:
@@ -430,29 +635,48 @@ class Automatic(Account):
 
         return performed_quantity
 
-    def swap(self, config):
-        balances = self.get_balances(config)
+    async def swaps(self, config):
+        quantity = self.choose_number_of_swaps(config=config)
+        config["current_max_quantity"] = quantity
+
+        performed_quantity = 0  # <3
+
+        for _ in range(quantity):
+            done = await self.run_module(
+                module_function=self.swap,
+                module_name="Swap",
+                module_transaction_id=config["performed_quantity"] + 1,
+                function_kwargs={"config": config},
+            )
+
+            if not done:
+                logger.info(
+                    f"[{self.account_id}][{self.address}] | Swap #{config['performed_quantity'] + 1} failed. Skipping"
+                )
+            else:
+                performed_quantity += 1
+                config["performed_quantity"] += 1
+
+        return performed_quantity
+
+    async def swap(self, config):
+        balances = await self.get_balances(config)
 
         src_token = self.choose_src_token(balances=balances, config=config)
-        logger.debug(f"src_token={src_token}")
         dst_token = self.choose_dst_token(
             src_token=src_token, balances=balances, config=config
         )
-        logger.debug(f"dst_token={dst_token}")
         swap_module = self.choose_swap_module(
             config=config, src_token=src_token, dst_token=dst_token
         )
-        logger.debug(f"swap_module={swap_module}")
-        amount = self.choose_swap_amount(
+        amount = self.get_amount(
             config=config,
             src_token=src_token,
         )
-        logger.debug(f"amount={amount}")
 
-        return swap_module["class"](
+        return await swap_module["class"](
             account_id=self.account_id,
             private_key=self.private_key,
-            proxy=self.proxy,
         ).swap(
             from_token=src_token["symbol"],
             to_token=dst_token["symbol"],
@@ -461,14 +685,19 @@ class Automatic(Account):
             decimal=src_token["decimal"],
             slippage=self.modules_config[swap_module["name"]]["slippage"],
             all_amount=amount == "all",
+            min_percent=self.modules_config[swap_module["name"]]["min_percent"],
+            max_percent=self.modules_config[swap_module["name"]]["max_percent"],
         )
 
-    def choose_swap_amount(self, config, src_token):
+    def get_amount(self, config, src_token):
         if src_token["symbol"] == "ETH":
             if src_token["balance"] <= self.config["min_balance_eth"]:
                 raise ValueError(
                     f"Not enough ETH to swap | balance={src_token['balance']} | min_balance_eth={self.config['min_balance_eth']}"
                 )
+
+            if "min_amount" not in config or "max_amount" not in config:
+                return float(src_token["balance"]) - self.config["min_balance_eth"]
 
             return min(
                 float(src_token["balance"]) - self.config["min_balance_eth"],
@@ -485,8 +714,9 @@ class Automatic(Account):
         for module_name in config["services"]:
             module = SWAP_MODULES[module_name]
             if (
-                src_token["symbol"] in module["tokens"]
-                and dst_token["symbol"] in module["tokens"][src_token["symbol"]]
+                src_token["symbol"].upper() in module["tokens"]
+                and dst_token["symbol"].upper()
+                in module["tokens"][src_token["symbol"].upper()]
             ):
                 module["name"] = module_name
                 modules.append(module)
@@ -523,6 +753,8 @@ class Automatic(Account):
         if chosen_token is None:
             chosen_token = eth
 
+        chosen_token["symbol"] = chosen_token["symbol"].upper()
+
         return chosen_token
 
     def choose_dst_token(self, balances: dict, src_token, config) -> dict:
@@ -541,144 +773,287 @@ class Automatic(Account):
 
         token = random.choice(list(dst_tokens))
 
-        return balances[token]
+        chosen_token = balances[token]
+        chosen_token["symbol"] = chosen_token["symbol"].upper()
 
-    def get_balances(self, config):
+        return chosen_token
+
+    async def get_balances(self, config):
         swappable_tokens = self.get_swappable_tokens(config=config)
-        tokens = {k: v for k, v in ZKSYNC_TOKENS.items() if k in swappable_tokens}
+        tokens = {k: v for k, v in SCROLL_TOKENS.items() if k in swappable_tokens}
 
-        balances = super().get_balances(tokens=tokens)
+        balances = await super().get_balances(tokens=tokens)
 
         return balances
 
-    def okx_deposit(self):
+    async def okx_deposit(self):
+        config = self.modules_config[MODULES_NAMES.okx_deposit]
         okx_client = OKX(
             account_id=self.account_id,
             private_key=self.private_key,
-            proxy=self.proxy,
             chain=self.config[AutomaticModules.bridge_out]["bridge_out_chain"],
-            credentials=self.modules_config[MODULES_NAMES.okx_deposit]["credentials"],
+            credentials=config["credentials"],
         )
-        if self.config[AutomaticModules.bridge_out]["bridge_out_chain"] == "zksync":
-            min_amount_left = self.config["min_amount_leave_on_zksync"]
-            max_amount_left = self.config["max_amount_leave_on_zksync"]
-        else:
-            min_amount_left = 0
-            max_amount_left = 0
 
-        if not okx_client.deposit(
-            address=self.okx_address,
-            min_amount_left=min_amount_left,
-            max_amount_left=max_amount_left,
+        if self.config[AutomaticModules.bridge_out]["bridge_out_chain"] == "scroll":
+            min_amount_left = self.config["min_amount_leave_on_scroll"]
+            max_amount_left = self.config["max_amount_leave_on_scroll"]
+        else:
+            min_amount_left = config["min_amount_left"]
+            max_amount_left = config["max_amount_left"]
+
+        if not (
+            await self.execute_func_with_retries(
+                func=okx_client.deposit,
+                func_kwargs={
+                    "address": self.okx_address,
+                    "min_amount_left": min_amount_left,
+                    "max_amount_left": max_amount_left,
+                },
+                module_name="OKX deposit",
+            )
         ):
             raise ValueError("OKX deposit failed")
 
         return True
 
-    def okx_withdraw(self):
+    async def okx_withdraw(self):
+        config = self.modules_config[MODULES_NAMES.okx_withdraw]
+
         okx_client = OKX(
             account_id=self.account_id,
             private_key=self.private_key,
-            proxy=self.proxy,
             chain=self.config[AutomaticModules.bridge_in]["bridge_in_chain"],
-            credentials=self.modules_config[MODULES_NAMES.okx_withdraw]["credentials"],
+            credentials=config["credentials"],
         )
-        if not okx_client.withdraw(
-            min_amount=self.modules_config[MODULES_NAMES.okx_withdraw]["min_amount"],
-            max_amount=self.modules_config[MODULES_NAMES.okx_withdraw]["max_amount"],
-            token="ETH",
-            transfer_from_subaccounts=self.modules_config[MODULES_NAMES.okx_withdraw][
-                "transfer_from_subaccounts"
-            ],
+        if not (
+            await self.execute_func_with_retries(
+                func=okx_client.withdraw,
+                func_kwargs={
+                    "min_amount": config["min_amount"],
+                    "max_amount": config["max_amount"],
+                    "token": config["token"],
+                    "transfer_from_subaccounts": config["transfer_from_subaccounts"],
+                },
+                module_name="OKX withdraw",
+            )
         ):
             raise ValueError("OKX withdraw failed")
 
         return True
 
-    def native_bridge_in(self):
-        config = self.modules_config[MODULES_NAMES.bridge_in_scroll]
+    async def layerswap_bridge_in(self):
+        config = self.modules_config[MODULES_NAMES.bridge_layerswap]
 
-        scroll = Scroll(self.account_id, self.private_key, self.proxy, "ethereum")
-        if not scroll.deposit(
-            min_amount=config["min_amount"],
-            max_amount=config["max_amount"],
-            decimal=config["decimal"],
-            all_amount=config["all_amount"],
-            min_percent=self.modules_config[MODULES_NAMES.bridge_in_scroll]["min_percent"],
-            max_percent=self.modules_config[MODULES_NAMES.bridge_in_scroll]["max_percent"],
+        layerswap = LayerSwap(
+            self.account_id,
+            self.private_key,
+            chain=self.config[AutomaticModules.bridge_in]["bridge_in_chain"],
+        )
+        if not await self.execute_func_with_retries(
+            func=layerswap.bridge,
+            func_kwargs={
+                "to_chain": config["to_chain"],
+                "min_amount": config["min_amount"],
+                "max_amount": config["max_amount"],
+                "decimal": config["decimal"],
+                "all_amount": config["all_amount"],
+                "min_percent": config["min_percent"],
+                "max_percent": config["max_percent"],
+            },
+            module_name="LayerSwap bridge in",
         ):
-            raise ValueError("Native bridge in failed")
+            raise ValueError("LayerSwap bridge in failed")
 
         return True
 
-    def native_bridge_out(self):
-        config = self.modules_config[MODULES_NAMES.bridge_out_scroll]
+    async def layerswap_bridge_out(self):
+        try:
+            amount = await self.get_amount_to_bridge_out()
+        except ValueError as e:
+            logger.info(
+                f"[{self.account_id}][{self.address}] | Balance is too low to bridge out, skipping"
+            )
+            return True
 
-        amount = self.get_amount_to_bridge_out()
-
-        scroll = Scroll(self.account_id, self.private_key, self.proxy, "scroll")
-        if not scroll.withdraw(
-            min_amount=amount,
-            max_amount=amount,
-            decimal=5,
-            all_amount=False,
-            min_percent=self.modules_config[MODULES_NAMES.bridge_out_scroll]["min_percent"],
-            max_percent=self.modules_config[MODULES_NAMES.bridge_out_scroll]["max_percent"],
+        layerswap = LayerSwap(self.account_id, self.private_key, chain="scroll")
+        if not await self.execute_func_with_retries(
+            func=layerswap.bridge,
+            func_kwargs={
+                "to_chain": self.config[AutomaticModules.bridge_out][
+                    "bridge_out_chain"
+                ],
+                "min_amount": amount,
+                "max_amount": amount,
+                "decimal": 5,
+                "all_amount": False,
+                "min_percent": 0,
+                "max_percent": 0,
+            },
+            module_name="LayerSwap bridge out",
         ):
-            raise ValueError("Native bridge out failed")
+            raise ValueError("LayerSwap bridge out failed")
 
         return True
 
-    def orbiter_bridge_in(self):
+    async def orbiter_bridge_in(self):
         config = self.modules_config[MODULES_NAMES.bridge_orbiter]
 
         orbiter = Orbiter(
-            account_id=self.account_id,
-            private_key=self.private_key,
+            self.account_id,
+            self.private_key,
             chain=self.config[AutomaticModules.bridge_in]["bridge_in_chain"],
-            proxy=self.proxy,
         )
-        if not orbiter.bridge(
-            destination_chain="scroll",
-            min_bridge=config["min_amount"],
-            max_bridge=config["max_amount"],
-            decimal=config["decimal"],
-            all_amount=config["all_amount"],
-            min_percent=self.modules_config[MODULES_NAMES.bridge_orbiter]["min_percent"],
-            max_percent=self.modules_config[MODULES_NAMES.bridge_orbiter]["max_percent"],
+        if not await self.execute_func_with_retries(
+            func=orbiter.bridge,
+            func_kwargs={
+                "to_chain": "scroll",
+                "min_amount": config["min_amount"],
+                "max_amount": config["max_amount"],
+                "decimal": config["decimal"],
+                "all_amount": config["all_amount"],
+                "min_percent": config["min_percent"],
+                "max_percent": config["max_percent"],
+            },
+            module_name="Orbiter bridge in",
         ):
             raise ValueError("Orbiter bridge in failed")
 
         return True
 
-    def orbiter_bridge_out(self):
-        config = self.modules_config[MODULES_NAMES.bridge_orbiter]
+    async def orbiter_bridge_out(self):
+        try:
+            amount = await self.get_amount_to_bridge_out()
+        except ValueError as e:
+            logger.info(
+                f"[{self.account_id}][{self.address}] | Balance is too low to bridge out, skipping"
+            )
+            return True
 
-        amount = self.get_amount_to_bridge_out()
-
-        orbiter = Orbiter(
-            account_id=self.account_id,
-            private_key=self.private_key,
-            chain="zksync",
-            proxy=self.proxy,
-        )
-        if not orbiter.bridge(
-            destination_chain=self.config[AutomaticModules.bridge_out][
-                "bridge_out_chain"
-            ],
-            min_bridge=amount,
-            max_bridge=amount,
-            decimal=5,
-            all_amount=False,
-            min_percent=0,
-            max_percent=0,
+        orbiter = Orbiter(self.account_id, self.private_key, chain="scroll")
+        if not await self.execute_func_with_retries(
+            func=orbiter.bridge,
+            func_kwargs={
+                "to_chain": self.config[AutomaticModules.bridge_out][
+                    "bridge_out_chain"
+                ],
+                "min_amount": amount,
+                "max_amount": amount,
+                "decimal": 5,
+                "all_amount": False,
+                "min_percent": 0,
+                "max_percent": 0,
+            },
+            module_name="Orbiter bridge out",
         ):
             raise ValueError("Orbiter bridge out failed")
 
         return True
 
-    def get_amount_to_bridge_out(self):
-        balance_wei = self.w3.eth.get_balance(self.address)
+    async def nitro_bridge_in(self):
+        config = self.modules_config[MODULES_NAMES.bridge_nitro]
+
+        nitro = Nitro(
+            self.account_id,
+            self.private_key,
+            chain=self.config[AutomaticModules.bridge_in]["bridge_in_chain"],
+        )
+        if not await self.execute_func_with_retries(
+            func=nitro.bridge,
+            func_kwargs={
+                "to_chain": "scroll",
+                "min_amount": config["min_amount"],
+                "max_amount": config["max_amount"],
+                "decimal": config["decimal"],
+                "all_amount": config["all_amount"],
+                "min_percent": config["min_percent"],
+                "max_percent": config["max_percent"],
+            },
+            module_name="Nitro bridge in",
+        ):
+            raise ValueError("Nitro bridge in failed")
+
+        return True
+
+    async def nitro_bridge_out(self):
+        try:
+            amount = await self.get_amount_to_bridge_out()
+        except ValueError as e:
+            logger.info(
+                f"[{self.account_id}][{self.address}] | Balance is too low to bridge out, skipping"
+            )
+            return True
+
+        nitro = Nitro(self.account_id, self.private_key, chain="scroll")
+        if not await self.execute_func_with_retries(
+            func=nitro.bridge,
+            func_kwargs={
+                "to_chain": self.config[AutomaticModules.bridge_out][
+                    "bridge_out_chain"
+                ],
+                "min_amount": amount,
+                "max_amount": amount,
+                "decimal": 5,
+                "all_amount": False,
+                "min_percent": 0,
+                "max_percent": 0,
+            },
+            module_name="Nitro bridge out",
+        ):
+            raise ValueError("Nitro bridge out failed")
+
+        return True
+
+    async def native_bridge_in(self):
+        config = self.modules_config[MODULES_NAMES.bridge_in_scroll]
+
+        scroll = Scroll(self.account_id, self.private_key, "ethereum")
+        if not await self.execute_func_with_retries(
+            func=scroll.deposit,
+            func_kwargs={
+                "min_amount": config["min_amount"],
+                "max_amount": config["max_amount"],
+                "decimal": config["decimal"],
+                "all_amount": config["all_amount"],
+                "min_percent": config["min_percent"],
+                "max_percent": config["max_percent"],
+            },
+            module_name="Native bridge in",
+        ):
+            raise ValueError("Native bridge in failed")
+
+        return True
+
+    async def native_bridge_out(self):
+        try:
+            amount = await self.get_amount_to_bridge_out()
+        except ValueError as e:
+            logger.info(
+                f"[{self.account_id}][{self.address}] | Balance is too low to bridge out, skipping"
+            )
+            return True
+
+        config = self.modules_config[MODULES_NAMES.bridge_out_scroll]
+
+        scroll = Scroll(self.account_id, self.private_key, "scroll")
+        if not await self.execute_func_with_retries(
+            func=scroll.withdraw,
+            func_kwargs={
+                "min_amount": amount,
+                "max_amount": amount,
+                "decimal": config["decimal"],
+                "all_amount": False,
+                "min_percent": 0,
+                "max_percent": 0,
+            },
+            module_name="Native bridge out",
+        ):
+            raise ValueError("Native bridge out failed")
+
+        return True
+
+    async def get_amount_to_bridge_out(self):
+        balance_wei = await self.w3.eth.get_balance(self.address)
         balance = float(Web3.from_wei(balance_wei, "ether"))
 
         amount_to_leave = round(
@@ -719,17 +1094,29 @@ class Automatic(Account):
             self.bridge_in = self.native_bridge_in
         elif self.config[AutomaticModules.bridge_in]["bridge_in_service"] == "orbiter":
             self.bridge_in = self.orbiter_bridge_in
+        elif (
+            self.config[AutomaticModules.bridge_in]["bridge_in_service"] == "layerswap"
+        ):
+            self.bridge_in = self.layerswap_bridge_in
+        elif self.config[AutomaticModules.bridge_in]["bridge_in_service"] == "nitro":
+            self.bridge_in = self.nitro_bridge_in
         else:
             raise ValueError(
                 f"Unknown bridge_in_service: {self.config[AutomaticModules.bridge_in]['bridge_in_service']}"
             )
-
         if self.config[AutomaticModules.bridge_out]["bridge_out_service"] == "native":
             self.bridge_out = self.native_bridge_out
         elif (
             self.config[AutomaticModules.bridge_out]["bridge_out_service"] == "orbiter"
         ):
             self.bridge_out = self.orbiter_bridge_out
+        elif (
+            self.config[AutomaticModules.bridge_out]["bridge_out_service"]
+            == "layerswap"
+        ):
+            self.bridge_out = self.layerswap_bridge_out
+        elif self.config[AutomaticModules.bridge_out]["bridge_out_service"] == "nitro":
+            self.bridge_out = self.nitro_bridge_out
         else:
             raise ValueError(
                 f"Unknown bridge_out_service: {self.config[AutomaticModules.bridge_out]['bridge_out_service']}"
@@ -743,6 +1130,8 @@ class Automatic(Account):
 
             if module_name in (
                 AutomaticModules.wrap_unwrap_eth,
+                AutomaticModules.aave,
+                AutomaticModules.layerbank,
             ):
                 quantity *= 2
 

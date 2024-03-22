@@ -8,7 +8,7 @@ from config import (
     ZERO_ADDRESS,
     SYNCSWAP_CONTRACTS,
     SYNCSWAP_ROUTER_ABI,
-    SYNCSWAP_CLASSIC_POOL_DATA_ABI
+    SYNCSWAP_CLASSIC_POOL_DATA_ABI,
 )
 from utils.gas_checker import check_gas
 from utils.helpers import retry
@@ -20,40 +20,45 @@ class SyncSwap(Account):
     def __init__(self, account_id: int, private_key: str) -> None:
         super().__init__(account_id=account_id, private_key=private_key, chain="scroll")
 
-        self.swap_contract = self.get_contract(SYNCSWAP_CONTRACTS["router"], SYNCSWAP_ROUTER_ABI)
+        self.swap_contract = self.get_contract(
+            SYNCSWAP_CONTRACTS["router"], SYNCSWAP_ROUTER_ABI
+        )
 
     async def get_pool(self, from_token: str, to_token: str):
-        contract = self.get_contract(SYNCSWAP_CONTRACTS["classic_pool"], SYNCSWAP_CLASSIC_POOL_ABI)
+        contract = self.get_contract(
+            SYNCSWAP_CONTRACTS["classic_pool"], SYNCSWAP_CLASSIC_POOL_ABI
+        )
 
         pool_address = await contract.functions.getPool(
             Web3.to_checksum_address(SCROLL_TOKENS[from_token]),
-            Web3.to_checksum_address(SCROLL_TOKENS[to_token])
+            Web3.to_checksum_address(SCROLL_TOKENS[to_token]),
         ).call()
 
         return pool_address
 
-    async def get_min_amount_out(self, pool_address: str, token_address: str, amount: int, slippage: float):
+    async def get_min_amount_out(
+        self, pool_address: str, token_address: str, amount: int, slippage: float
+    ):
         pool_contract = self.get_contract(pool_address, SYNCSWAP_CLASSIC_POOL_DATA_ABI)
 
         min_amount_out = await pool_contract.functions.getAmountOut(
-            token_address,
-            amount,
-            self.address
+            token_address, amount, self.address
         ).call()
 
         return int(min_amount_out - (min_amount_out / 100 * slippage))
 
+    @retry
     async def swap(
-            self,
-            from_token: str,
-            to_token: str,
-            min_amount: float,
-            max_amount: float,
-            decimal: int,
-            slippage: float,
-            all_amount: bool,
-            min_percent: int,
-            max_percent: int
+        self,
+        from_token: str,
+        to_token: str,
+        min_amount: float,
+        max_amount: float,
+        decimal: int,
+        slippage: float,
+        all_amount: bool,
+        min_percent: int,
+        max_percent: int,
     ):
         token_address = Web3.to_checksum_address(SCROLL_TOKENS[from_token])
 
@@ -65,7 +70,7 @@ class SyncSwap(Account):
                 decimal,
                 all_amount,
                 min_percent,
-                max_percent
+                max_percent,
             )
 
             logger.info(
@@ -80,29 +85,42 @@ class SyncSwap(Account):
                 if from_token == "ETH":
                     tx_data.update({"value": amount_wei})
                 else:
-                    await self.approve(amount_wei, token_address, Web3.to_checksum_address(SYNCSWAP_CONTRACTS["router"]))
+                    await self.approve(
+                        amount_wei,
+                        token_address,
+                        Web3.to_checksum_address(SYNCSWAP_CONTRACTS["router"]),
+                    )
 
-                min_amount_out = await self.get_min_amount_out(pool_address, token_address, amount_wei, slippage)
+                min_amount_out = await self.get_min_amount_out(
+                    pool_address, token_address, amount_wei, slippage
+                )
 
-                steps = [{
-                    "pool": pool_address,
-                    "data": abi.encode(["address", "address", "uint8"], [token_address, self.address, 1]),
-                    "callback": ZERO_ADDRESS,
-                    "callbackData": "0x"
-                }]
+                steps = [
+                    {
+                        "pool": pool_address,
+                        "data": abi.encode(
+                            ["address", "address", "uint8"],
+                            [token_address, self.address, 1],
+                        ),
+                        "callback": ZERO_ADDRESS,
+                        "callbackData": "0x",
+                    }
+                ]
 
-                paths = [{
-                    "steps": steps,
-                    "tokenIn": ZERO_ADDRESS if from_token == "ETH" else token_address,
-                    "amountIn": amount_wei
-                }]
+                paths = [
+                    {
+                        "steps": steps,
+                        "tokenIn": (
+                            ZERO_ADDRESS if from_token == "ETH" else token_address
+                        ),
+                        "amountIn": amount_wei,
+                    }
+                ]
 
                 deadline = int(time.time()) + 1000000
 
                 contract_txn = await self.swap_contract.functions.swap(
-                    paths,
-                    min_amount_out,
-                    deadline
+                    paths, min_amount_out, deadline
                 ).build_transaction(tx_data)
 
                 signed_txn = await self.sign(contract_txn)
@@ -110,13 +128,15 @@ class SyncSwap(Account):
                 txn_hash = await self.send_raw_transaction(signed_txn)
 
                 await self.wait_until_tx_finished(txn_hash.hex())
-                return True
             else:
-                logger.error(f"[{self.account_id}][{self.address}] Swap path {from_token} to {to_token} not found!")
+                logger.error(
+                    f"[{self.account_id}][{self.address}] Swap path {from_token} to {to_token} not found!"
+                )
+                raise ValueError(f"Swap path {from_token} to {to_token} not found!")
         except Exception as e:
             logger.error(
                 f"[{self.account_id}][{self.address}] Swap on SyncSwap Error | {e}"
             )
+            raise e
 
-        return False
-
+        return True

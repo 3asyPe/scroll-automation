@@ -1,18 +1,3 @@
-# RANDOM WALLETS MODE
-RANDOM_WALLET = True  # True/False
-
-SLEEP_FROM = 500  # Second
-SLEEP_TO = 4000  # Second
-
-QUANTITY_THREADS = 1
-
-THREAD_SLEEP_FROM = 15
-THREAD_SLEEP_TO = 120
-
-# GWEI CONTROL MODE
-CHECK_GWEI = True  # True/False
-MAX_GWEI = 15
-
 MAX_PRIORITY_FEE = {
     "ethereum": 0.01,
     "polygon": 40,
@@ -21,14 +6,56 @@ MAX_PRIORITY_FEE = {
     "zksync": 0.25,
 }
 
+LAYERSWAP_API_KEY = ""  # Layerswap API key. Fill in if you want to use LayerSwap
+
+ENABLE_ERROR_TRACEBACK = True  # Enable error tracebacks for debug purposes
+
+# RANDOM WALLETS MODE
+RANDOM_WALLET = False  # True or False
+
+RETRIES = 3  # Number of retries
+
+RETRY_DELAY_MIN = 120  # Minimum delay before retry
+RETRY_DELAY_MAX = 180  # Maximum delay before retry
+
+SLEEP_MIN = 200  # Minimum sleep time between modules in automation mode
+SLEEP_MAX = 1000  # Maximum sleep time between modules in automation mode
+
+MIN_SLEEP_BEFORE_ACCOUNT_START = (
+    0 * 60
+)  # Minimum sleep time before starting next account
+MAX_SLEEP_BEFORE_ACCOUNT_START = (
+    180 * 60
+)  # Maximum sleep time before starting next account
+
+# GWEI CONTROL MODE
+CHECK_GWEI = True  # True or False
+MAX_GWEI = 35
+
+THREADS = 2  # Number of threads
+
 GAS_MULTIPLIER = 1.3
 
-# RETRY MODE
-RETRY_COUNT = 3
+MIN_ALL_AMOUNT_ETH_PERCENT = (
+    90  # minimal of how many percents all_amount will swap from ETH
+)
+MAX_ALL_AMOUNT_ETH_PERCENT = (
+    92  # maximal of how many percents all_amount will swap from ETH
+)
 
-LAYERSWAP_API_KEY = ""
 
-SCROLL_FEE_INACCURACY = 0.00001
+BRIDGE_FEES = {
+    "native": {
+        "in": 0.008,
+        "out": 0.001,
+    },
+    "orbiter": 0.0013,
+    "nitro": 0.0013,
+    "layerswap": 0.0013,
+}
 
-MIN_ALL_AMOUNT_ETH_PERCENT = 90
-MAX_ALL_AMOUNT_ETH_PERCENT = 95
+OKX_CREDENTIALS = {
+    "apikey": "",
+    "apisecret": "",
+    "passphrase": "",
+}

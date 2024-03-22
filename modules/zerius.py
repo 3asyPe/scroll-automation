@@ -17,6 +17,7 @@ class Zerius(Account):
         self.contract = self.get_contract(ZERIUS_CONTRACT, ZERIUS_ABI)
 
         self.chain_ids = {
+            "zora": 195,
             "arbitrum": 110,
             "optimism": 111,
             "polygon": 109,
@@ -33,15 +34,12 @@ class Zerius(Account):
 
     async def get_estimate_fee(self, chain: str, nft_id: int):
         fee = await self.contract.functions.estimateSendFee(
-            self.chain_ids[chain],
-            self.address,
-            nft_id,
-            False,
-            "0x"
+            self.chain_ids[chain], self.address, nft_id, False, "0x"
         ).call()
 
         return int(fee[0] * 1.2)
 
+    @retry
     async def mint(self):
         logger.info(f"[{self.account_id}][{self.address}] Mint Zerius NFT")
         try:
@@ -49,7 +47,9 @@ class Zerius(Account):
 
             tx_data = await self.get_tx_data(mint_fee)
 
-            transaction = await self.contract.functions.mint().build_transaction(tx_data)
+            transaction = await self.contract.functions.mint().build_transaction(
+                tx_data
+            )
 
             signed_txn = await self.sign(transaction)
 
@@ -62,11 +62,11 @@ class Zerius(Account):
             logger.error(
                 f"[{self.account_id}][{self.address}] Mint Zerius NFT Error | {e}"
             )
+            raise e
 
-        return False
-
-    async def bridge(self, chain: List, sleep_from: int, sleep_to: int):
-        chain_id = random.choice(chain)
+    @retry
+    async def bridge_mint(self, chains: List, sleep_from: int, sleep_to: int):
+        chain_id = random.choice(chains)
 
         try:
             mint_nft = await self.mint()
@@ -75,8 +75,26 @@ class Zerius(Account):
 
             nft_id = await self.get_nft_id(mint_nft)
 
-            await sleep(sleep_from, sleep_to)
+            await sleep(
+                account_id=self.account_id,
+                address=self.address,
+                sleep_from=sleep_from,
+                sleep_to=sleep_to,
+            )
 
+            await self.bridge(chain_id, nft_id)
+        except Exception as e:
+            logger.error(
+                f"[{self.account_id}][{self.address}] Bridge and Mint Zerius NFT Error | {e}"
+            )
+            raise e
+
+        return True
+
+    @retry
+    async def bridge(self, chain_id: str, nft_id: int):
+        logger.info(f"[{self.account_id}][{self.address}] Bridge Zerius NFT")
+        try:
             l0_fee = await self.get_estimate_fee(chain_id, nft_id)
 
             base_bridge_fee = await self.contract.functions.bridgeFee().call()
@@ -90,7 +108,7 @@ class Zerius(Account):
                 nft_id,
                 ZERO_ADDRESS,
                 ZERO_ADDRESS,
-                "0x0001000000000000000000000000000000000000000000000000000000000003d090"
+                "0x0001000000000000000000000000000000000000000000000000000000000003d090",
             ).build_transaction(tx_data)
 
             signed_txn = await self.sign(transaction)
@@ -98,10 +116,9 @@ class Zerius(Account):
             txn_hash = await self.send_raw_transaction(signed_txn)
 
             await self.wait_until_tx_finished(txn_hash.hex())
-            return True
+            return txn_hash
         except Exception as e:
             logger.error(
-                f"[{self.account_id}][{self.address}] Mint NFT Error | {e}"
+                f"[{self.account_id}][{self.address}] Bridge Zerius NFT Error | {e}"
             )
-
-        return False
+            raise e

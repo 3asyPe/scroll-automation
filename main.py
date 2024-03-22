@@ -2,108 +2,168 @@ import random
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+import traceback
+import tracemalloc
+
+from loguru import logger
 
 import questionary
 from questionary import Choice
+from datetime import datetime
 
-from config import ACCOUNTS
+from config import OKX_ADDRESSES, WALLETS
 from settings import (
+    ENABLE_ERROR_TRACEBACK,
+    MAX_SLEEP_BEFORE_ACCOUNT_START,
+    MIN_SLEEP_BEFORE_ACCOUNT_START,
     RANDOM_WALLET,
-    SLEEP_TO,
-    SLEEP_FROM,
-    QUANTITY_THREADS,
-    THREAD_SLEEP_FROM,
-    THREAD_SLEEP_TO
+    THREADS,
 )
 from modules_settings import *
+from utils.gas_checker import check_gas
 from utils.sleeping import sleep
 
 
 def get_module():
+    choices = [
+        Choice(f"{i}) {key}", value)
+        for i, (key, value) in enumerate(
+            {
+                "AUTOMATION MODE": automatic,
+                "Deposit to Scroll": deposit_scroll,
+                "Withdraw from Scroll": withdraw_scroll,
+                "OKX Withdraw": okx_withdraw,
+                "OKX Deposit": okx_deposit,
+                "Wrap ETH": wrap_eth,
+                "Unwrap ETH": unwrap_eth,
+                "Bridge Orbiter": bridge_orbiter,
+                "Bridge Layerswap": bridge_layerswap,
+                "Bridge Nitro": bridge_nitro,
+                "Swap on Skydrome": swap_skydrome,
+                "Swap on Zebra": swap_zebra,
+                "Swap on SyncSwap": swap_syncswap,
+                "Swap on XYSwap": swap_xyswap,
+                "Deposit LayerBank": deposit_layerbank,
+                "Deposit Aave": deposit_aave,
+                "Withdraw LayerBank": withdraw_layerbank,
+                "Withdraw Aave": withdraw_aave,
+                "Mint and Bridge Zerius NFT": mint_zerius,
+                "Mint L2Pass NFT": mint_l2pass,
+                "Mint ZkStars NFT": mint_zkstars,
+                "Create NFT collection on Omnisea": create_omnisea,
+                "RubyScore Vote": rubyscore_vote,
+                "Send message L2Telegraph": send_message,
+                "Mint and bridge NFT L2Telegraph": bridge_nft,
+                "Mint NFT on NFTS2ME": mint_nft,
+                "Mint Scroll Origins NFT": nft_origins,
+                "Dmail sending mail": send_mail,
+                "Create gnosis safe": send_message,
+                "Deploy contract": deploy_contract,
+                "Exit": "exit",
+            }.items(),
+            start=1,
+        )
+    ]
     result = questionary.select(
         "Select a method to get started",
-        choices=[
-            Choice("1) Deposit to Scroll", deposit_scroll),
-            Choice("2) Withdraw from Scroll", withdraw_scroll),
-            Choice("3) Bridge Orbiter", bridge_orbiter),
-            Choice("4) Bridge Layerswap", bridge_layerswap),
-            Choice("5) Wrap ETH", wrap_eth),
-            Choice("6) Unwrap ETH", unwrap_eth),
-            Choice("7) Swap on Skydrome", swap_skydrome),
-            Choice("8) Swap on SyncSwap", swap_syncswap),
-            Choice("9) Deposit LayerBank", deposit_layerbank),
-            Choice("10) Withdraw LayerBank", withdraw_layerbank),
-            Choice("11) Mint and Bridge Zerius NFT", mint_zerius),
-            Choice("12) Create NFT collection on Omnisea", create_omnisea),
-            Choice("13) Mint NFT on NFTS2ME", mint_nft),
-            Choice("14) Dmail send email", send_mail),
-            Choice("15) Deploy contract", deploy_contract),
-            Choice("16) Use custom routes", custom_routes),
-            Choice("17) Check transaction count", "tx_checker"),
-            Choice("18) Exit", "exit"),
-        ],
-        qmark="⚙️ ",
-        pointer="✅ "
+        choices=choices,
+        qmark="🛠 ",
+        pointer="✅ ",
     ).ask()
     if result == "exit":
-        print("\n❤️ Subscribe to me – https://t.me/sybilwave\n")
-        print("🤑 Donate me: 0x00000b0ddce0bfda4531542ad1f2f5fad7b9cde9")
         sys.exit()
     return result
 
 
-def get_wallets():
-    wallets = [
-        {
-            "id": _id,
-            "key": key,
-        } for _id, key in enumerate(ACCOUNTS, start=1)
-    ]
-
-    return wallets
+@check_gas
+async def run_module(module, account_id, key, okx_address):
+    await module(account_id, key, okx_address)
 
 
-async def run_module(module, account_id, key):
-    await module(account_id, key)
+async def run_group(module, group, group_id, start_id):
+    for i, account in enumerate(group):
+        if start_id != 0:
+            await sleep(
+                account_id=start_id + i + 1,
+                address="",
+                sleep_from=MIN_SLEEP_BEFORE_ACCOUNT_START,
+                sleep_to=MAX_SLEEP_BEFORE_ACCOUNT_START,
+            )
+        try:
+            await run_module(
+                module=module,
+                account_id=start_id + i + 1,
+                key=account[0],
+                okx_address=account[1],
+            )
+        except Exception as e:
+            if ENABLE_ERROR_TRACEBACK:
+                logger.error(
+                    f"[group - {group_id}][account - {start_id + i + 1}] Error - {e}, Traceback:\n {traceback.format_exc()}"
+                )
+            else:
+                logger.error(
+                    f"[group - {group_id}][account - {start_id + i + 1}] Error - {e}"
+                )
 
-    await sleep(SLEEP_FROM, SLEEP_TO)
 
+def _generate_groups():
+    global THREADS
 
-def _async_run_module(module, account_id, key):
-    asyncio.run(run_module(module, account_id, key))
-
-
-def main(module):
-    wallets = get_wallets()
-
+    data = list(zip(WALLETS, OKX_ADDRESSES))
     if RANDOM_WALLET:
-        random.shuffle(wallets)
+        random.shuffle(data)
 
-    # with ThreadPoolExecutor(max_workers=QUANTITY_THREADS) as executor:
-    #     for _, account in enumerate(wallets, start=1):
-    #         executor.submit(
-    #             _async_run_module,
-    #             module,
-    #             account.get("id"),
-    #             account.get("key"),
-    #         )
-    #         time.sleep(random.randint(THREAD_SLEEP_FROM, THREAD_SLEEP_TO))
-    for _, account in enumerate(wallets, start=1):
-        _async_run_module(
-            module,
-            account.get("id"),
-            account.get("key"),
+    if THREADS <= 0:
+        THREADS = 1
+    elif THREADS > len(data):
+        THREADS = len(data)
+
+    group_size = len(data) // THREADS
+    remainder = len(data) % THREADS
+
+    groups = []
+    start = 0
+    for i in range(THREADS):
+        # Add an extra account to some groups to distribute the remainder
+        end = start + group_size + (1 if i < remainder else 0)
+        groups.append(data[start:end])
+        start = end
+
+    return groups
+
+
+async def main(module):
+    groups = _generate_groups()
+
+    start_id = 0
+    tasks = []
+    for id, group in enumerate(groups):
+        tasks.append(
+            asyncio.create_task(
+                run_group(
+                    module=module,
+                    group=group,
+                    group_id=id,
+                    start_id=start_id,
+                ),
+                name=f"group - {id}",
+            )
         )
 
+        start_id += len(group)
 
-if __name__ == '__main__':
-    print("❤️ Subscribe to me – https://t.me/sybilwave\n")
+    await asyncio.gather(*tasks)
+
+
+if __name__ == "__main__":
+    logger.add(
+        f'logs/{datetime.now().strftime("%Y-%m-%d")}.log',
+        level="DEBUG",
+        colorize=False,
+        backtrace=True,
+        diagnose=True,
+    )
 
     module = get_module()
-    if module == "tx_checker":
-        get_tx_count()
-    else:
-        main(module)
-
-    print("\n❤️ Subscribe to me – https://t.me/sybilwave\n")
-    print("🤑 Donate me: 0x00000b0ddce0bfda4531542ad1f2f5fad7b9cde9")
+    asyncio.run(main(module))

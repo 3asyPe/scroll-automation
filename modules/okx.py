@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hmac
 import random
@@ -10,23 +11,25 @@ from config import RPC
 from loguru import logger
 import datetime
 
+from utils.gas_checker import check_gas
+
 
 class OKX(Account):
     def __init__(
         self,
         account_id: int,
         private_key: str,
-        proxy: Union[None, str],
         chain: str,
         credentials: dict,
     ) -> None:
-        super().__init__(
-            account_id=account_id, private_key=private_key, proxy=proxy, chain=chain
-        )
+        super().__init__(account_id=account_id, private_key=private_key, chain=chain)
 
         self.credentials = credentials
-        self.proxies = {"https": f"http://{proxy}"} if proxy else None
-        self.okx_network_name = RPC[chain]["okx_network_name"]
+        try:
+            self.okx_network_name = RPC[chain]["okx_network_name"]
+        except KeyError as e:
+            raise ValueError(f"OKX doesn't support {chain} network")
+
         if self.okx_network_name is None:
             raise ValueError(f"Couldn't get the okx network name for {chain}")
 
@@ -36,13 +39,10 @@ class OKX(Account):
                 "secret": self.credentials["apisecret"],
                 "password": self.credentials["passphrase"],
                 "enableRateLimit": True,
-                "proxies": self.proxies,
             }
         )
 
-        # self.retry = 0
-
-    def wait_for_withdrawal(self, txid):
+    async def wait_for_withdrawal(self, txid):
         logger.info(
             f"[{self.account_id}][{self.address}] Waiting for OKX withdrawal to complete| txid: {txid}"
         )
@@ -69,9 +69,13 @@ class OKX(Account):
                     f"[{self.account_id}][{self.address}] OKX Withdraw Unknown Status | response: {withdrawal}"
                 )
 
-            time.sleep(60)
+            # wait before checking again
+            await asyncio.sleep(60)
 
-    def withdraw(self, min_amount, max_amount, token, transfer_from_subaccounts=False):
+    @check_gas
+    async def withdraw(
+        self, min_amount, max_amount, token, transfer_from_subaccounts=False
+    ):
         amount_to_withdraw = round(random.uniform(min_amount, max_amount), 6)
 
         logger.info(
@@ -79,7 +83,7 @@ class OKX(Account):
         )
 
         if transfer_from_subaccounts:
-            self.transfer_from_subaccounts()
+            await self.transfer_from_subaccounts()
 
         try:
             chainName = token + "-" + self.okx_network_name
@@ -100,20 +104,18 @@ class OKX(Account):
                 },
             )
 
-            logger.info(f"{response=}")
-
-            self.wait_for_withdrawal(response["info"]["wdId"])
+            await self.wait_for_withdrawal(response["info"]["wdId"])
 
             logger.info(
                 f"[{self.account_id}][{self.address}] OKX Withdrawed successfully | {amount_to_withdraw} {token}"
             )
-
-            return True
         except Exception as error:
             logger.error(
                 f"[{self.account_id}][{self.address}] Couldn't perform OKX Withdraw | {amount_to_withdraw} {token}: {error}"
             )
-            raise
+            raise error
+
+        return True
 
     def get_withdrawal_fee(self, token, chainName):
         currencies = self.client.fetch_currencies()
@@ -137,59 +139,63 @@ class OKX(Account):
             f"Couldn't get the withdrawal fee for {token=} and {chainName=}"
         )
 
-    def deposit(self, address, min_amount_left, max_amount_left):
+    async def deposit(self, address, min_amount_left, max_amount_left):
         """Deposit funds from wallet to okx. Only ETH token supported"""
 
         amount_leave_on_wallet = round(
             random.uniform(min_amount_left, max_amount_left), 6
         )
 
-        balance = self.w3.eth.get_balance(self.address)
+        balance = await self.w3.eth.get_balance(self.address)
 
         amount = int(balance - amount_leave_on_wallet * 10**18)
         logger.info(
             f"[{self.account_id}][{self.address}] Depositing to OKX | {amount / 10**18} ETH"
         )
 
-        amount -= 100  # in case of inaccuracy
+        amount -= self.w3.to_wei(0.00005, "ether")  # in case of inaccuracy
 
-        estimated_gas = self.w3.eth.estimate_gas(
-            {"from": self.address, "to": self.w3.to_checksum_address(address), "value": amount}
+        estimated_gas = await self.w3.eth.estimate_gas(
+            {
+                "from": self.address,
+                "to": self.w3.to_checksum_address(address),
+                "value": amount,
+            }
         )
-        estimated_gas_price = self.w3.eth.gas_price
+        estimated_gas_price = await self.w3.eth.gas_price
         estimated_fee = estimated_gas * estimated_gas_price
 
         value = amount - estimated_fee
 
         tx = {
-            "chainId": self.w3.eth.chain_id,
+            "chainId": await self.w3.eth.chain_id,
             "to": self.w3.to_checksum_address(address),
-            "nonce": self.w3.eth.get_transaction_count(self.address),
+            "nonce": await self.w3.eth.get_transaction_count(self.address),
             "gas": estimated_gas,
-            "gasPrice": self.w3.eth.gas_price,
+            "gasPrice": await self.w3.eth.gas_price,
             "value": value,
         }
 
         try:
-            signed_tx = self.sign(tx)
-            tx_hash = self.send_raw_transaction(signed_txn=signed_tx)
+            signed_tx = await self.sign(tx)
+            tx_hash = await self.send_raw_transaction(signed_txn=signed_tx)
 
             logger.info(
                 f"[{self.account_id}][{self.address}] OKX Deposit | {amount / 10**18} ETH | TX HASH: {self.explorer}{tx_hash.hex()}"
             )
 
-            self.wait_until_tx_finished(tx_hash.hex())
+            await self.wait_until_tx_finished(tx_hash.hex())
 
             logger.info(
                 f"[{self.account_id}][{self.address}] OKX Deposited successfully | {amount / 10**18} ETH"
             )
-            return True
         except Exception as e:
             logger.error(f"Deposit transaction on L1 network failed | error: {e}")
+            raise e
 
-        return False
+        return True
 
-    def transfer_from_subaccounts(self):
+    async def transfer_from_subaccounts(self):
         logger.info(
             f"[{self.account_id}][{self.address}] Transfering ETH from subaccounts"
         )
@@ -212,6 +218,7 @@ class OKX(Account):
                     request_path=f"/api/v5/asset/subaccount/balances?subAcct={name_sub}&ccy=ETH",
                     meth="GET",
                 )
+
                 sub_balance = requests.get(
                     f"https://www.okx.cab/api/v5/asset/subaccount/balances?subAcct={name_sub}&ccy=ETH",
                     timeout=10,
@@ -242,7 +249,7 @@ class OKX(Account):
                     headers=headers,
                 )
                 a = a.json()
-                time.sleep(1)
+                await asyncio.sleep(1)
 
         except Exception as error:
             logger.error(

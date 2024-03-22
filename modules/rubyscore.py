@@ -1,28 +1,27 @@
 from loguru import logger
-import random
+
+from config import RUBYSCORE_VOTE_CONTRACT, RUBYSCORE_VOTE_ABI
+from utils.gas_checker import check_gas
 from utils.helpers import retry
-from config import DEPLOYER_ABI
 from .account import Account
 
 
-class Deployer(Account):
+class RubyScore(Account):
     def __init__(self, account_id: int, private_key: str) -> None:
         super().__init__(account_id=account_id, private_key=private_key, chain="scroll")
 
+        self.contract = self.get_contract(RUBYSCORE_VOTE_CONTRACT, RUBYSCORE_VOTE_ABI)
+
     @retry
-    async def deploy_token(self, contracts: list[str]):
-        logger.info(f"[{self.account_id}][{self.address}] Deploy contract")
+    async def vote(self):
+        logger.info(f"[{self.account_id}][{self.address}] RubyScore Voting")
 
         try:
-            path = random.choice(contracts)
-            with open(path, "r") as file:
-                bytecode = file.read()
-
             tx_data = await self.get_tx_data()
 
-            contract = self.w3.eth.contract(abi=DEPLOYER_ABI, bytecode=bytecode)
-
-            transaction = await contract.constructor().build_transaction(tx_data)
+            transaction = await self.contract.functions.vote().build_transaction(
+                tx_data
+            )
 
             signed_txn = await self.sign(transaction)
 
@@ -31,7 +30,7 @@ class Deployer(Account):
             await self.wait_until_tx_finished(txn_hash.hex())
         except Exception as e:
             logger.error(
-                f"[{self.account_id}][{self.address}] Deploy contract Error | {e}"
+                f"[{self.account_id}][{self.address}] RubyScore Voting Error | {e}"
             )
             raise e
 

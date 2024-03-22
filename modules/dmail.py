@@ -14,6 +14,7 @@ class Dmail(Account):
 
         self.contract = self.get_contract(DMAIL_CONTRACT, DMAIL_ABI)
 
+    @retry
     async def send_mail(self):
         logger.info(f"[{self.account_id}][{self.address}] Send email")
 
@@ -25,7 +26,11 @@ class Dmail(Account):
 
             tx_data = await self.get_tx_data()
             tx_data.update(
-                {"data": data, "to": self.w3.to_checksum_address(DMAIL_CONTRACT), "gasPrice": await self.w3.eth.gas_price}
+                {
+                    "data": data,
+                    "to": self.w3.to_checksum_address(DMAIL_CONTRACT),
+                    "gasPrice": await self.w3.eth.gas_price,
+                }
             )
 
             signed_txn = await self.sign(tx_data)
@@ -33,10 +38,8 @@ class Dmail(Account):
             txn_hash = await self.send_raw_transaction(signed_txn)
 
             await self.wait_until_tx_finished(txn_hash.hex())
-            return True
         except Exception as e:
-            logger.error(
-                f"[{self.account_id}][{self.address}] Send email Error | {e}"
-            )
+            logger.error(f"[{self.account_id}][{self.address}] Send email Error | {e}")
+            raise e
 
-        return False
+        return True
