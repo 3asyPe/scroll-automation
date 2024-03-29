@@ -111,6 +111,15 @@ class Scroll(Account):
                 f"[{self.account_id}][{self.address}] Bridge from Scroll | {amount} ETH"
             )
 
+            dst_account = Account(
+                account_id=self.account_id,
+                private_key=self.private_key,
+                chain="ethereum",
+            )
+            cur_dst_balance_wei = await dst_account.w3.eth.get_balance(
+                dst_account.address
+            )
+
             contract = self.get_contract(BRIDGE_CONTRACTS["withdraw"], WITHDRAW_ABI)
 
             tx_data = await self.get_tx_data(amount_wei)
@@ -124,6 +133,12 @@ class Scroll(Account):
             txn_hash = await self.send_raw_transaction(signed_txn)
 
             await self.wait_until_tx_finished(txn_hash.hex())
+
+            await self.wait_for_balance_increase(
+                balance_wei=cur_dst_balance_wei,
+                increase_amount_wei=tx_data["value"],
+                chain="ethereum",
+            )
         except Exception as e:
             logger.error(
                 f"[{self.account_id}][{self.address}] Bridge from Scroll Error | {e}"

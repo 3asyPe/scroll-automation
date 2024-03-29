@@ -249,6 +249,7 @@ class OKX(Account):
                     headers=headers,
                 )
                 a = a.json()
+                print(a)
                 await asyncio.sleep(1)
 
         except Exception as error:

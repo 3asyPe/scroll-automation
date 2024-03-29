@@ -19,12 +19,6 @@ def retry(func):
                 result = await func(*args, **kwargs)
                 return result
             except Exception as e:
-                if AUTOMATIC_MODE.get():
-                    raise e
-
-                if ENABLE_ERROR_TRACEBACK:
-                    traceback.print_exc()
-
                 logger.error(f"Error | {e}")
                 if str(e).startswith("520, "):
                     logger.error(
@@ -32,6 +26,12 @@ def retry(func):
                     )
                 else:
                     retries += 1
+                    if AUTOMATIC_MODE.get():
+                        raise e
+
+                if ENABLE_ERROR_TRACEBACK:
+                    traceback.print_exc()
+
                 if retries <= RETRIES:
                     logger.info(f"Retrying... {retries}/{RETRIES}")
                     await sleep(random.randint(RETRY_DELAY_MIN, RETRY_DELAY_MAX))

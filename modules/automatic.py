@@ -569,8 +569,11 @@ class Automatic(Account):
         if config.get("unwraped", True):
             try:
                 await self.run_module(
-                    module_class=Scroll,
-                    module_function="wrap_eth",
+                    module_function=Scroll(
+                        account_id=self.account_id,
+                        private_key=self.private_key,
+                        chain="scroll",
+                    ).wrap_eth,
                     module_name="Wrap Eth",
                     function_kwargs={
                         "min_amount": self.modules_config[MODULES_NAMES.wrap_eth][
@@ -607,8 +610,11 @@ class Automatic(Account):
                 return 0
 
         done = await self.run_module(
-            module_class=Scroll,
-            module_function="unwrap_eth",
+            module_function=Scroll(
+                account_id=self.account_id,
+                private_key=self.private_key,
+                chain="scroll",
+            ).unwrap_eth,
             module_name="Unwrap Eth",
             function_kwargs={
                 "min_amount": 1,

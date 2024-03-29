@@ -18,6 +18,7 @@ from settings import (
     MAX_PRIORITY_FEE,
     MIN_ALL_AMOUNT_ETH_PERCENT,
 )
+from utils.helpers import retry
 from utils.sleeping import sleep
 
 
@@ -62,6 +63,7 @@ class Account:
 
         return contract
 
+    @retry
     async def get_balances(self, tokens=SCROLL_TOKENS) -> dict:
         balances = {}
 
@@ -74,6 +76,7 @@ class Account:
 
         return balances
 
+    @retry
     async def get_balance(self, contract_address: Optional[str] = None) -> dict:
         if contract_address is None:
             balance_wei = await self.w3.eth.get_balance(self.address)
@@ -103,6 +106,7 @@ class Account:
             "decimal": decimal,
         }
 
+    @retry
     async def get_amount(
         self,
         from_token: str,
@@ -162,6 +166,7 @@ class Account:
 
         return amount_wei, amount, balance
 
+    @retry
     async def check_allowance(self, token_address: str, contract_address: str) -> int:
         token_address = self.w3.to_checksum_address(token_address)
         contract_address = self.w3.to_checksum_address(contract_address)
@@ -173,6 +178,7 @@ class Account:
 
         return amount_approved
 
+    @retry
     async def approve(
         self, amount: float, token_address: str, contract_address: str
     ) -> None:
@@ -207,6 +213,7 @@ class Account:
                 sleep_to=20,
             )
 
+    @retry
     async def wait_for_balance_increase(
         self,
         balance_wei: float,
@@ -247,7 +254,8 @@ class Account:
 
             await asyncio.sleep(sleep)
 
-    async def wait_until_tx_finished(self, hash: str, max_wait_time=180) -> None:
+    @retry
+    async def wait_until_tx_finished(self, hash: str, max_wait_time=1000) -> None:
         start_time = time.time()
         while True:
             try:
@@ -267,10 +275,13 @@ class Account:
                     raise Exception(f"Transaction failed! {self.explorer}{hash}")
             except TransactionNotFound:
                 if time.time() - start_time > max_wait_time:
-                    print(f"FAILED TX: {hash}")
-                    return
+                    logger.error(
+                        f"[{self.account_id}][{self.address}] {self.explorer}{hash} transaction not found!"
+                    )
+                    raise Exception(f"Transaction not found! {self.explorer}{hash}")
                 await asyncio.sleep(1)
 
+    @retry
     async def sign(self, transaction, wait_for_gas=True) -> Any:
         from utils.gas_checker import wait_gas
 
@@ -299,6 +310,7 @@ class Account:
 
         return signed_txn
 
+    @retry
     async def send_raw_transaction(self, signed_txn) -> HexBytes:
         txn_hash = await self.w3.eth.send_raw_transaction(signed_txn.rawTransaction)
 

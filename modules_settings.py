@@ -27,8 +27,8 @@ MODULES_CONFIG = {
         # NOT USED IN AUTOMATION MODE
         "dst_chain": Chains.linea,  # destination chain (zksync, ethereum, polygon_zkevm, arbitrum, optimism)
         # USED IN MANUAL AND AUTOMATION MODE
-        "min_amount": 0.12,  # minimal amount to withdraw
-        "max_amount": 0.12,  # maximal amount to withdraw
+        "min_amount": 0.1,  # minimal amount to withdraw
+        "max_amount": 0.1,  # maximal amount to withdraw
         "token": "ETH",  # token to withdraw
         "transfer_from_subaccounts": True,  # transfer from subaccounts
         "credentials": OKX_CREDENTIALS,  # okx credentials
@@ -36,10 +36,10 @@ MODULES_CONFIG = {
     MODULES_NAMES.okx_deposit: {
         # Deposit to OKX
         # NOT USED IN AUTOMATION MODE
-        "src_chain": Chains.base,  # source chain
+        "src_chain": Chains.linea,  # source chain
         # USED IN MANUAL AND AUTOMATION MODE
-        "min_amount_left": 0.008,  # minimal amount to leave on wallet
-        "max_amount_left": 0.01,  # maximal amount to leave on wallet
+        "min_amount_left": 0,  # minimal amount to leave on wallet
+        "max_amount_left": 0,  # maximal amount to leave on wallet
         "credentials": OKX_CREDENTIALS,  # okx credentials
     },
     MODULES_NAMES.bridge_in_scroll: {
@@ -72,7 +72,7 @@ MODULES_CONFIG = {
         "min_amount": 0.12,  # minimal amount to bridge
         "max_amount": 0.12,  # maximal amount to bridge
         "decimal": 4,  # token decimal
-        "all_amount": False,  # bridge configured % ETH
+        "all_amount": True,  # bridge configured % ETH
         "min_percent": 100,  # minimal of how many percents all_amount will bridge from ETH
         "max_percent": 100,  # maximal of how many percents all_amount will bridge from ETH
     },
@@ -291,7 +291,7 @@ MODULES_CONFIG = {
 # !!! DON'T FORGET TO ALSO CONFIGURE MODULES_CONFIG !!!
 AUTOMATIC_CONFIG = {
     "sleep_at_start": True,  # Script will sleep after bridge and before first transaction
-    "okx_withdraw_enabled": False,  # Withdraw funds from OKX to EVM or not
+    "okx_withdraw_enabled": True,  # Withdraw funds from OKX to EVM or not
     "okx_deposit_enabled": True,  # Deposit funds to OKX from EVM to okx or not
     "swap_all_tokens_to_eth_before_withdraw": True,  # Swap all tokens to ETH before withdraw from scroll
     # !IMPORTANT NOTICE
@@ -307,17 +307,18 @@ AUTOMATIC_CONFIG = {
     "skip_if_failed": True,  # if swap failed it will be counted as performed after retries
     AutomaticModules.bridge_in: {
         "bridge_in_enabled": True,  # Bridge funds from EVM to scroll or not
-        "bridge_in_service": "native",  # Choose bridge in scroll service: native, nitro, orbiter, layerswap
+        "bridge_in_service": "orbiter",  # Choose bridge in scroll service: native, nitro, orbiter, layerswap
         # !IMPORTANT NOTICE
         # OKX WILL WITHDRAW FUNDS TO THE bridge_in_chain
         # If bridge_in_service == "native", then ethereum only!
-        "bridge_in_chain": Chains.ethereum,
+        "bridge_in_chain": Chains.linea,
     },
     AutomaticModules.bridge_out: {
         "bridge_out_enabled": True,  # Bridge funds from scroll to EVM or not
-        "bridge_out_service": "nitro",  # Choose bridge out of scroll service: native, nitro, orbiter, layerswap
+        "bridge_out_service": "orbiter",  # Choose bridge out of scroll service: native, nitro, orbiter, layerswap
         # !IMPORTANT NOTICE
         # OKX WILL DEPOSIT FUNDS FROM THE bridge_out_chain
+        # If bridge_out_service == "native", then ethereum only!
         "bridge_out_chain": Chains.linea,
     },
     AutomaticModules.swaps: {
@@ -331,8 +332,8 @@ AUTOMATIC_CONFIG = {
         "min_quantity": 4,  # ! MINIMUM 2
         "max_quantity": 6,
         "decimal": 6,  # do not change
-        "min_amount": 0.003,  # minimal amount to swap on scroll in ETH
-        "max_amount": 0.006,  # maximal amount to swap on scroll in ETH
+        "min_amount": 0.007,  # minimal amount to swap on scroll in ETH
+        "max_amount": 0.008,  # maximal amount to swap on scroll in ETH
     },
     AutomaticModules.wrap_unwrap_eth: {
         # Quantity of wrap and unwrap eth. 1 quantity = 2 transactions
@@ -341,7 +342,7 @@ AUTOMATIC_CONFIG = {
     },
     AutomaticModules.send_email: {
         "min_quantity": 0,
-        "max_quantity": 2,
+        "max_quantity": 1,
     },
     AutomaticModules.aave: {
         # Quantity of deposit and withdraw on aave. 1 quantity = 2 transactions
@@ -350,8 +351,8 @@ AUTOMATIC_CONFIG = {
     },
     AutomaticModules.layerbank: {
         # Quantity of deposit and withdraw on layerbank. 1 quantity = 2 transactions
-        "min_quantity": 2,
-        "max_quantity": 3,
+        "min_quantity": 1,
+        "max_quantity": 2,
     },
     AutomaticModules.mint_bridge_l2_telegraph: {
         # COSTS 0.0005 ETH + gas
@@ -377,7 +378,7 @@ AUTOMATIC_CONFIG = {
         "max_quantity": 1,
     },
     AutomaticModules.rubyscore_vote: {
-        "min_quantity": 1,
+        "min_quantity": 0,
         "max_quantity": 1,
     },
     AutomaticModules.deploy_contract: {
@@ -407,8 +408,10 @@ async def automatic(account_id, key, okx_address, *args, **kwargs):
     modules - list of modules to use. Select any from:
     AutomaticModules.swaps
     AutomaticModules.mint_bridge_l2_telegraph
+    AutomaticModules.wrap_unwrap_eth
     AutomaticModules.l2telegraph_send_message
     AutomaticModules.rubyscore_vote
+    AutomaticModules.send_email
     AutomaticModules.aave
     AutomaticModules.mint_nfts2me
     AutomaticModules.mint_zerius
@@ -422,6 +425,8 @@ async def automatic(account_id, key, okx_address, *args, **kwargs):
 
     modules = [
         AutomaticModules.swaps,
+        AutomaticModules.wrap_unwrap_eth,
+        AutomaticModules.send_email,
         AutomaticModules.mint_bridge_l2_telegraph,
         AutomaticModules.l2telegraph_send_message,
         AutomaticModules.rubyscore_vote,
